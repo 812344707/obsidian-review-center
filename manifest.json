@@ -1,0 +1,9 @@
+{
+  "id": "review-center",
+  "name": "复习中心",
+  "version": "0.1.0",
+  "minAppVersion": "1.13.0",
+  "description": "Review notes and flashcards with FSRS scheduling.",
+  "author": "wwl",
+  "isDesktopOnly": false
+}

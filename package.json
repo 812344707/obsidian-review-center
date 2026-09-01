@@ -1,0 +1,30 @@
+{
+  "name": "obsidian-review-center",
+  "version": "0.1.0",
+  "description": "Mobile-first Obsidian review plugin powered by FSRS.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run test && npm run build"
+  },
+  "keywords": [
+    "obsidian",
+    "spaced-repetition",
+    "fsrs"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ts-fsrs": "5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "esbuild": "0.28.2",
+    "obsidian": "1.13.1",
+    "typescript": "^5.8.3",
+    "vitest": "4.1.11"
+  }
+}
