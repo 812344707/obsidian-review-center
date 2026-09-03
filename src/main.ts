@@ -20,7 +20,8 @@ import type {
   ReviewSession,
   StoredPluginData,
 } from "./types";
-import { createId, isWatchedPath } from "./utils";
+import { createId, pathIsInside } from "./utils";
+import { normalizeSettings } from "./config";
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 
 export default class ReviewCenterPlugin extends Plugin {
@@ -34,6 +35,10 @@ export default class ReviewCenterPlugin extends Plugin {
   private sourceLeaf: WorkspaceLeaf | null = null;
   private refreshPromise: Promise<void> | null = null;
   private refreshTimer: number | null = null;
+  private legacySettings: ReviewCenterSettings | null = null;
+  private migrationPromise: Promise<void> | null = null;
+  private tickBusy = false;
+  private tickSignature = "";
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -58,6 +63,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.addSettingTab(new ReviewCenterSettingTab(this.app, this));
     this.registerVaultEvents();
     this.registerWorkspaceEvents();
+    this.registerInterval(window.setInterval(() => void this.tickReview(), 15000));
 
     this.app.workspace.onLayoutReady(() => {
       void this.initializeAfterLayout();
@@ -70,16 +76,19 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async updateSettings(next: ReviewCenterSettings): Promise<void> {
-    this.settings = sanitizeSettings(next);
-    const stored: StoredPluginData = { schemaVersion: 1, settings: this.settings };
+    await this.ensureMigrated();
+    this.settings = normalizeSettings(next);
+    const stored: StoredPluginData = { schemaVersion: 2, settings: this.settings };
     await this.saveData(stored);
+    await this.renderOpenViews();
+    this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
     this.scheduleRefresh();
   }
 
   async refreshData(showNotice = false): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
-    this.refreshPromise = this.service
-      .refresh()
+    this.refreshPromise = this.ensureMigrated()
+      .then(() => this.service.refresh())
       .then(() => {
         if (showNotice) new Notice("复习中心已重新扫描");
       })
@@ -124,8 +133,9 @@ export default class ReviewCenterPlugin extends Plugin {
     }
   }
 
-  async startReview(mode: ReviewMode, extra = false): Promise<void> {
-    const entry = this.service.startSession(mode, extra);
+  async startReview(mode: ReviewMode, extra = false, groupId?: string): Promise<void> {
+    await this.refreshData();
+    const entry = this.service.startSession(mode, extra, groupId);
     if (!entry) {
       new Notice("当前没有可复习内容");
       await this.openReviewCenter(true);
@@ -137,6 +147,8 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async continueReview(): Promise<void> {
+    await this.refreshData();
+    this.service.requeueDue();
     const session = this.service.session;
     if (!session) {
       await this.openReviewCenter(true);
@@ -464,6 +476,8 @@ export default class ReviewCenterPlugin extends Plugin {
       }),
     );
     this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultFileChanged(file.path)));
+    this.registerEvent(this.app.metadataCache.on("changed", (file) => this.onVaultFileChanged(file.path)));
+    this.registerEvent(this.app.metadataCache.on("resolved", () => this.scheduleRefresh()));
   }
 
   private registerWorkspaceEvents(): void {
@@ -488,17 +502,7 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private onVaultFileChanged(path: string): void {
     if (!path.toLowerCase().endsWith(".md")) return;
-    if (
-      !isWatchedPath(
-        path,
-        this.settings.watchedFolders,
-        this.settings.excludedFolders,
-        this.settings.dataFolder,
-      ) &&
-      !this.service.records.some((record) => record.sourcePath === path)
-    ) {
-      return;
-    }
+    if (pathIsInside(path, this.settings.dataFolder)) return;
     this.scheduleRefresh();
   }
 
@@ -517,11 +521,43 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async loadSettings(): Promise<void> {
-    const stored = (await this.loadData()) as Partial<StoredPluginData> | null;
-    this.settings = sanitizeSettings({
-      ...DEFAULT_SETTINGS,
-      ...(stored?.settings ?? {}),
-    });
+    const stored = await this.loadData() as { schemaVersion?: number; settings?: ReviewCenterSettings } | null;
+    this.settings = normalizeSettings(stored?.settings);
+    if (stored?.settings && stored.schemaVersion !== 2) this.legacySettings = stored.settings;
+  }
+
+  private async ensureMigrated(): Promise<void> {
+    if (!this.legacySettings) return;
+    if (this.migrationPromise) return this.migrationPromise;
+    this.migrationPromise = (async () => {
+      await this.store.initialize();
+      await this.store.writeBackup({
+        schemaVersion: 1, exportedAt: new Date().toISOString(), pluginVersion: "0.1.0",
+        settings: this.legacySettings!, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory(),
+      }, "pre-tags-migration");
+      await this.saveData({ schemaVersion: 2, settings: this.settings } satisfies StoredPluginData);
+      this.legacySettings = null;
+      this.service.finishSession();
+      new Notice("旧版复习数据已备份。请配置笔记和卡片标签集，原有进度会继续保留。");
+    })().finally(() => { this.migrationPromise = null; });
+    return this.migrationPromise;
+  }
+
+  private async tickReview(): Promise<void> {
+    if (this.tickBusy || this.refreshPromise || !this.service) return;
+    this.tickBusy = true;
+    try {
+      const waiting = this.service.session && !this.service.currentEntry();
+      const changed = this.service.requeueDue();
+      if (waiting && changed && !this.showDashboard && this.service.session?.mode === "note") await this.openActiveNote();
+      const views = this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW);
+      const signature = JSON.stringify([new Date().toDateString(), this.service.counts("note"), this.service.counts("card")]);
+      const dashboardChanged = signature !== this.tickSignature;
+      this.tickSignature = signature;
+      if ((this.showDashboard && dashboardChanged) || (waiting && changed)) {
+        for (const leaf of views) if (leaf.view instanceof ReviewCenterView) await leaf.view.render();
+      }
+    } finally { this.tickBusy = false; }
   }
 
   private getOrCreateDeviceId(): string {
@@ -553,35 +589,6 @@ export default class ReviewCenterPlugin extends Plugin {
   private localPrefix(): string {
     return `review-center:${this.app.vault.getName()}`;
   }
-}
-
-function sanitizeSettings(settings: ReviewCenterSettings): ReviewCenterSettings {
-  return {
-    ...settings,
-    watchedFolders: uniqueFolders(settings.watchedFolders),
-    excludedFolders: uniqueFolders(settings.excludedFolders),
-    reviewHeading: settings.reviewHeading.trim() || DEFAULT_SETTINGS.reviewHeading,
-    reviewHeadingLevel: clampInteger(settings.reviewHeadingLevel, 1, 6),
-    dataFolder: settings.dataFolder.replace(/^\/+|\/+$/g, "").trim() || DEFAULT_SETTINGS.dataFolder,
-    noteNewLimit: clampInteger(settings.noteNewLimit, 0, 999),
-    noteReviewLimit: clampInteger(settings.noteReviewLimit, 0, 9999),
-    cardNewLimit: clampInteger(settings.cardNewLimit, 0, 9999),
-    cardReviewLimit: clampInteger(settings.cardReviewLimit, 0, 99999),
-    noteRetention: clampNumber(settings.noteRetention, 0.7, 0.99),
-    cardRetention: clampNumber(settings.cardRetention, 0.7, 0.99),
-  };
-}
-
-function uniqueFolders(folders: string[]): string[] {
-  return [...new Set((folders ?? []).map((folder) => folder.replace(/^\/+|\/+$/g, "").trim()).filter(Boolean))];
-}
-
-function clampInteger(value: number, minimum: number, maximum: number): number {
-  return Math.round(clampNumber(Number(value), minimum, maximum));
-}
-
-function clampNumber(value: number, minimum: number, maximum: number): number {
-  return Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, value)) : minimum;
 }
 
 function errorMessage(error: unknown): string {

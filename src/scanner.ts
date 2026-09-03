@@ -10,7 +10,8 @@ import type {
   ReviewItem,
   SourceRecord,
 } from "./types";
-import { createId, isWatchedPath } from "./utils";
+import { createId, pathIsInside } from "./utils";
+import { resolveGroup } from "./config";
 
 interface IdentifiedFile {
   file: TFile;
@@ -41,11 +42,18 @@ export class VaultScanner {
     const recordById = new Map(reconciled.records.map((record) => [record.reviewId, record]));
     const settings = this.getSettings();
     const allMarkdown = this.app.vault.getMarkdownFiles();
-    const outsideIdentityPaths = this.collectKnownIdentityPaths(allMarkdown);
-    const watchedFiles = allMarkdown.filter((file) =>
-      isWatchedPath(file.path, settings.watchedFolders, settings.excludedFolders, settings.dataFolder),
-    );
-    const identified = await this.identifyWatchedFiles(watchedFiles, recordById);
+    // Metadata may lag behind vault events at startup or after a rename. Never
+    // infer deletion or mint identities until every Markdown cache is available.
+    if (allMarkdown.some((file) => !this.app.metadataCache.getFileCache(file))) {
+      return { records: reconciled.records, history, conflicts: reconciled.conflicts };
+    }
+    const outsideIdentityPaths = this.collectKnownIdentityPaths(allMarkdown, recordById);
+    const watchedFiles = allMarkdown.filter((file) => {
+      if (pathIsInside(file.path, settings.dataFolder)) return false;
+      const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
+      return resolveGroup(tags, settings.noteGroups) || resolveGroup(tags, settings.cardGroups);
+    });
+    const identified = await this.identifyWatchedFiles(watchedFiles, recordById, outsideIdentityPaths);
     const activeIds = new Set<string>();
     const resultRecords: SourceRecord[] = [];
 
@@ -61,10 +69,14 @@ export class VaultScanner {
 
     for (const record of reconciled.records) {
       if (activeIds.has(record.reviewId)) continue;
-      const outsidePath = outsideIdentityPaths.get(record.reviewId);
+      const outsidePath = outsideIdentityPaths.get(record.reviewId) ??
+        (allMarkdown.some((file) => file.path === record.sourcePath) ? record.sourcePath : undefined);
       if (outsidePath) {
         record.sourcePath = outsidePath;
         record.sourceTitle = outsidePath.split("/").at(-1)?.replace(/\.md$/i, "") ?? outsidePath;
+        const file = allMarkdown.find((candidate) => candidate.path === outsidePath);
+        const cache = file && this.app.metadataCache.getFileCache(file);
+        record.tags = cache ? (getAllTags(cache) ?? []) : record.tags;
         record.sourceStatus = "out-of-scope";
         record.updatedAt = new Date().toISOString();
         resultRecords.push(record);
@@ -87,10 +99,17 @@ export class VaultScanner {
   private async identifyWatchedFiles(
     files: TFile[],
     records: Map<string, SourceRecord>,
+    owners: Map<string, string>,
   ): Promise<IdentifiedFile[]> {
     const entries: IdentifiedFile[] = [];
     for (const file of files) {
-      entries.push({ file, reviewId: await this.ensureReviewId(file) });
+      let reviewId = await this.ensureReviewId(file);
+      const owner = owners.get(reviewId);
+      if (owner && owner !== file.path) {
+        reviewId = createId("note");
+        await this.setReviewId(file, reviewId);
+      }
+      entries.push({ file, reviewId });
     }
 
     const byId = new Map<string, IdentifiedFile[]>();
@@ -119,28 +138,32 @@ export class VaultScanner {
     events: HistoryEvent[],
   ): Promise<SourceRecord> {
     const settings = this.getSettings();
-    let markdown = await this.app.vault.read(entry.file);
-    let parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
-    if (parsed.valid && parsed.cards.some((draft) => !draft.blockId)) {
-      await this.app.vault.process(entry.file, (current) =>
-        insertMissingBlockIds(current, parsed.cards, () => createId("rv")),
-      );
-      markdown = await this.app.vault.read(entry.file);
-      parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
-    }
-
     const now = new Date();
     const cache = this.app.metadataCache.getFileCache(entry.file);
     const tags = cache ? (getAllTags(cache) ?? []) : [];
+    const cardGroup = resolveGroup(tags, settings.cardGroups);
+    let parsed: ReturnType<typeof parseReviewSection> | undefined;
+    if (cardGroup) {
+      let markdown = await this.app.vault.read(entry.file);
+      parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
+      if (parsed.valid && parsed.cards.some((draft) => !draft.blockId)) {
+        await this.app.vault.process(entry.file, (current) => {
+          const latest = parseReviewSection(current, settings.reviewHeading, settings.reviewHeadingLevel);
+          return latest.valid ? insertMissingBlockIds(current, latest.cards, () => createId("rv")) : current;
+        });
+        markdown = await this.app.vault.read(entry.file);
+        parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
+      }
+    }
     const record = existing ?? this.createRecord(entry, now, tags, events);
     record.sourcePath = entry.file.path;
     record.sourceTitle = entry.file.basename;
     record.tags = [...new Set(tags)].sort();
     record.updatedAt = now.toISOString();
-    record.sourceStatus = parsed.valid ? "active" : "parse-error";
+    record.sourceStatus = !parsed || parsed.valid ? "active" : "parse-error";
     const syncWarnings = record.warnings.filter((warning) => warning.startsWith("同步冲突："));
-    record.warnings = [...syncWarnings, ...parsed.warnings];
-    if (parsed.valid) this.reconcileCards(record, parsed.cards, events, now);
+    record.warnings = [...syncWarnings, ...(parsed?.warnings ?? [])];
+    if (parsed?.valid) this.reconcileCards(record, parsed.cards, events, now);
     return record;
   }
 
@@ -316,11 +339,11 @@ export class VaultScanner {
     });
   }
 
-  private collectKnownIdentityPaths(files: TFile[]): Map<string, string> {
+  private collectKnownIdentityPaths(files: TFile[], records: Map<string, SourceRecord>): Map<string, string> {
     const result = new Map<string, string>();
-    for (const file of files) {
+    for (const file of [...files].sort((a, b) => a.path.localeCompare(b.path))) {
       const value = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
-      if (value) result.set(value, file.path);
+      if (value && (!result.has(value) || records.get(value)?.sourcePath === file.path)) result.set(value, file.path);
     }
     return result;
   }
@@ -328,8 +351,11 @@ export class VaultScanner {
   private async ensureReviewId(file: TFile): Promise<string> {
     const cached = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
     if (cached) return cached;
-    const reviewId = createId("note");
-    await this.setReviewId(file, reviewId);
+    let reviewId = createId("note");
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      reviewId = readReviewId(frontmatter) ?? reviewId;
+      Reflect.set(frontmatter, "review_id", reviewId);
+    });
     return reviewId;
   }
 

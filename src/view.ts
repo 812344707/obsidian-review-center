@@ -9,12 +9,15 @@ import { BackupPickerModal, ChangedCardsModal } from "./modals";
 import { renderCloze } from "./parser";
 import { GRADE_LABELS, REVIEW_GRADES } from "./scheduler";
 import type ReviewCenterPlugin from "./main";
-import type { QueueEntry, ReviewItem, SourceRecord } from "./types";
+import { groupsFor, resolveGroup } from "./config";
+import { heatmapDays } from "./activity";
+import type { QueueEntry, ReviewItem, ReviewMode, SourceRecord } from "./types";
 
 export const REVIEW_CENTER_VIEW = "review-center-view";
 
 export class ReviewCenterView extends ItemView {
   private renderVersion = 0;
+  private selectedGroups: Partial<Record<ReviewMode, string>> = {};
 
   constructor(leaf: WorkspaceLeaf, readonly plugin: ReviewCenterPlugin) {
     super(leaf);
@@ -41,6 +44,10 @@ export class ReviewCenterView extends ItemView {
     const container = this.contentEl;
     container.empty();
     container.addClass("review-center-view");
+    if (this.plugin.service.restoringSession) {
+      container.createEl("p", { text: "正在读取复习进度…", attr: { role: "status" } });
+      return;
+    }
     if (!this.plugin.showDashboard && this.plugin.service.currentPendingChange()) {
       this.renderPendingChangeBlock(container);
     } else if (!this.plugin.showDashboard && this.plugin.service.session && !this.plugin.service.currentEntry()) {
@@ -70,11 +77,11 @@ export class ReviewCenterView extends ItemView {
       })();
     });
 
-    if (this.plugin.settings.watchedFolders.length === 0) {
+    if (![...this.plugin.settings.noteGroups, ...this.plugin.settings.cardGroups].some((group) => group.tags.length)) {
       const onboarding = container.createDiv({ cls: "review-center-callout" });
-      onboarding.createEl("strong", { text: "先选择资料文件夹" });
+      onboarding.createEl("strong", { text: "先设置复习标签" });
       onboarding.createEl("p", {
-        text: "插件不会扫描整个 Vault。请在设置 → 复习中心中填写要纳入复习的文件夹。",
+        text: "请在设置 → 复习中心中分别配置笔记和卡片标签集。原有复习进度已保留，匹配标签后继续使用。",
       });
     }
 
@@ -103,6 +110,8 @@ export class ReviewCenterView extends ItemView {
         .addEventListener("click", () => void this.plugin.continueReview());
     }
 
+    if (this.plugin.settings.showNoteHeatmap) this.renderHeatmap(container, "note");
+    if (this.plugin.settings.showCardHeatmap) this.renderHeatmap(container, "card");
     this.renderWarnings(container);
     this.renderManagement(container);
     this.renderDataActions(container);
@@ -114,20 +123,64 @@ export class ReviewCenterView extends ItemView {
     label: string,
     iconName: string,
   ): void {
-    const counts = this.plugin.service.counts(mode);
-    const card = parent.createDiv({ cls: "review-center-category" });
+    const groups = groupsFor(this.plugin.settings, mode);
+    if (!groups.some((group) => group.id === this.selectedGroups[mode])) delete this.selectedGroups[mode];
+    const groupId = this.selectedGroups[mode];
+    const counts = this.plugin.service.counts(mode, groupId);
+    const card = parent.createDiv({ cls: `review-center-category is-${mode}` });
     const icon = card.createDiv({ cls: "review-center-category-icon" });
     setIcon(icon, iconName);
     card.createEl("h2", { text: label });
+    const select = card.createEl("select", { attr: { "aria-label": `${label}复习组` } });
+    select.createEl("option", { value: "", text: "全部组" });
+    for (const group of groups) select.createEl("option", { value: group.id, text: group.name });
+    select.value = groupId ?? "";
+    select.addEventListener("change", () => { this.selectedGroups[mode] = select.value || undefined; void this.render(); });
     const countRow = card.createDiv({ cls: "review-center-counts" });
-    countRow.createSpan({ text: `到期 ${counts.due}` });
+    countRow.createSpan({ text: `今日到期 ${counts.due}` });
     countRow.createSpan({ text: `新内容 ${counts.new}` });
     const start = card.createEl("button", { cls: "mod-cta", text: "开始" });
     start.disabled = counts.due + counts.new === 0;
-    start.addEventListener("click", () => void this.plugin.startReview(mode));
+    start.addEventListener("click", () => void this.plugin.startReview(mode, false, groupId));
     const extra = card.createEl("button", { text: "额外复习" });
-    extra.disabled = this.plugin.service.allCount(mode) === 0;
-    extra.addEventListener("click", () => void this.plugin.startReview(mode, true));
+    extra.disabled = this.plugin.service.allCount(mode, groupId) === 0;
+    extra.addEventListener("click", () => void this.plugin.startReview(mode, true, groupId));
+  }
+
+  private renderHeatmap(parent: HTMLElement, mode: ReviewMode): void {
+    const days = heatmapDays(this.plugin.service.history, mode);
+    const section = parent.createEl("section", { cls: `review-heatmap is-${mode}` });
+    const title = mode === "note" ? "笔记复习热力图" : "卡片复习热力图";
+    const total = days.reduce((sum, day) => sum + day.count, 0);
+    section.createEl("h3", { text: title });
+    section.createEl("p", { cls: "review-heatmap-summary", text: `最近一年 · ${total} 次评分 · ${days.filter((day) => day.count > 0).length} 个学习日` });
+    const scroll = section.createDiv({ cls: "review-heatmap-scroll", attr: { tabindex: "0", "aria-label": `${title}，可左右滚动` } });
+    const chart = scroll.createDiv({ cls: "review-heatmap-chart" });
+    const months = chart.createDiv({ cls: "review-heatmap-months", attr: { "aria-hidden": "true" } });
+    const grid = chart.createDiv({ cls: "review-heatmap-grid" });
+    const first = new Date(`${days[0].date}T12:00:00`);
+    const offset = (first.getDay() + 6) % 7;
+    const weeks = Math.ceil((offset + days.length) / 7);
+    months.style.gridTemplateColumns = `repeat(${weeks}, 12px)`;
+    for (let index = 0; index < offset; index += 1) grid.createSpan({ cls: "review-heatmap-empty" });
+    const detail = section.createEl("p", { cls: "review-heatmap-detail", text: "点击日期查看次数 · 周一至周日从上到下", attr: { "aria-live": "polite" } });
+    days.forEach((day, index) => {
+      const date = new Date(`${day.date}T12:00:00`);
+      if (date.getDate() === 1) {
+        const month = months.createSpan({ text: `${date.getMonth() + 1}月` });
+        month.style.gridColumn = String(Math.floor((offset + index) / 7) + 1);
+      }
+      const label = `${day.date} · ${day.count} 次评分`;
+      const cell = grid.createEl("button", { cls: `review-heatmap-cell level-${day.level}`, attr: { title: label, "aria-label": label, type: "button" } });
+      cell.addEventListener("click", () => detail.setText(label));
+    });
+    const legend = section.createDiv({ cls: "review-heatmap-legend" });
+    legend.createSpan({ text: "评分次数" });
+    for (const [level, label] of ["0", "1–5", "6–10", "11–20", "21+"].entries()) {
+      legend.createSpan({ cls: `review-heatmap-swatch level-${level}`, attr: { "aria-hidden": "true" } });
+      legend.createSpan({ text: label });
+    }
+    window.requestAnimationFrame(() => { if (scroll.isConnected) scroll.scrollLeft = scroll.scrollWidth; });
   }
 
   private async renderCardSession(container: HTMLElement, version: number): Promise<void> {
@@ -147,7 +200,8 @@ export class ReviewCenterView extends ItemView {
     const tags = container.createDiv({ cls: "review-card-tags" });
     for (const tag of entry.tags) tags.createSpan({ text: tag });
 
-    const card = container.createDiv({ cls: "review-card" });
+    const card = container.createDiv({ cls: `review-card is-${entry.item.kind}` });
+    card.createEl("div", { cls: "review-card-kind", text: `${entry.item.kind === "qa" ? "问答卡" : "挖空卡"} · ${entry.group.name}` });
     const front = card.createDiv({ cls: "review-card-front markdown-rendered" });
     const frontMarkdown =
       entry.item.kind === "cloze"
@@ -217,7 +271,7 @@ export class ReviewCenterView extends ItemView {
     setIcon(icon, "circle-check-big");
     done.createEl("h1", { text: "本轮完成" });
     const mode = this.plugin.service.session?.mode ?? "card";
-    const nextDue = this.plugin.service.nextDue(mode);
+    const nextDue = this.plugin.service.nextDue(mode, this.plugin.service.session?.groupId);
     done.createEl("p", {
       text: nextDue
         ? `已完成当前限额内的内容。下次到期：${formatDue(nextDue.toISOString())}`
@@ -316,11 +370,13 @@ export class ReviewCenterView extends ItemView {
     for (const { record, item } of rows.slice(0, 200)) {
       const row = parent.createDiv({ cls: "review-management-row" });
       const main = row.createDiv({ cls: "review-management-main" });
+      const group = resolveGroup(record.tags, groupsFor(this.plugin.settings, item.kind === "note" ? "note" : "card"));
+      const scope = record.sourceStatus !== "out-of-scope" && group ? group.name : "范围外，进度保留";
       main.createEl("strong", {
         text: item.kind === "note" ? record.sourceTitle : item.content.question.slice(0, 100) || "挖空卡",
       });
       main.createEl("small", {
-        text: `${record.sourcePath} · ${statusLabel(item.status)} · 下次 ${formatDue(item.schedule.due)}`,
+        text: `${record.sourcePath} · ${scope} · ${statusLabel(item.status)} · 下次 ${formatDue(item.schedule.due)}`,
       });
       const actions = row.createDiv({ cls: "review-management-actions" });
       if (item.status === "suspended") {

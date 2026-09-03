@@ -1,3 +1,4 @@
+import { normalizeSettings } from "../src/config";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("obsidian", () => ({
@@ -18,20 +19,10 @@ import type {
   SourceRecord,
 } from "../src/types";
 
-const settings: ReviewCenterSettings = {
-  watchedFolders: ["资料"],
-  excludedFolders: [],
-  reviewHeading: "复习",
-  reviewHeadingLevel: 2,
-  dataFolder: "复习中心数据",
-  noteNewLimit: 1,
-  noteReviewLimit: 10,
-  cardNewLimit: 10,
-  cardReviewLimit: 100,
-  noteRetention: 0.85,
-  cardRetention: 0.9,
-  autoOpenDashboard: false,
-};
+const settings: ReviewCenterSettings = normalizeSettings(null);
+settings.noteGroups[0].tags = ["测试"];
+settings.cardGroups[0].tags = ["测试"];
+
 
 function makeItem(status: ReviewItem["status"] = "active"): ReviewItem {
   return {

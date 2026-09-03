@@ -79,26 +79,42 @@ export interface HistoryEvent {
   baseRevision: number;
   nextRevision: number;
   rating?: number;
+  mode?: ReviewMode;
+  groupId?: string;
+  wasNew?: boolean;
+  undoOf?: string;
   after: ReviewItem | null;
 }
 
+export interface ReviewParameters {
+  newLimit: number;
+  reviewLimit: number;
+  retention: number;
+  learningSteps: string[];
+  relearningSteps: string[];
+  maximumInterval: number;
+}
+
+export interface ReviewGroup {
+  id: string;
+  name: string;
+  tags: string[];
+  parameters: ReviewParameters;
+}
+
 export interface ReviewCenterSettings {
-  watchedFolders: string[];
-  excludedFolders: string[];
+  noteGroups: ReviewGroup[];
+  cardGroups: ReviewGroup[];
+  showNoteHeatmap: boolean;
+  showCardHeatmap: boolean;
   reviewHeading: string;
   reviewHeadingLevel: number;
   dataFolder: string;
-  noteNewLimit: number;
-  noteReviewLimit: number;
-  cardNewLimit: number;
-  cardReviewLimit: number;
-  noteRetention: number;
-  cardRetention: number;
   autoOpenDashboard: boolean;
 }
 
 export interface StoredPluginData {
-  schemaVersion: 1;
+  schemaVersion: 2;
   settings: ReviewCenterSettings;
 }
 
@@ -121,6 +137,7 @@ export interface ReviewSectionParseResult {
 }
 
 export interface QueueEntry {
+  group: ReviewGroup;
   sourceId: string;
   sourcePath: string;
   sourceTitle: string;
@@ -142,6 +159,8 @@ export type ReviewMode = "note" | "card";
 export interface ReviewSession {
   id: string;
   mode: ReviewMode;
+  groupId?: string;
+  extra?: boolean;
   entryKeys: string[];
   currentIndex: number;
   answerVisible: boolean;
@@ -149,6 +168,7 @@ export interface ReviewSession {
 }
 
 export interface UndoEntry {
+  eventId: string;
   sourceId: string;
   itemId: string;
   before: ReviewItem;
@@ -156,7 +176,7 @@ export interface UndoEntry {
 }
 
 export interface FullBackup {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   exportedAt: string;
   pluginVersion: string;
   settings: ReviewCenterSettings;

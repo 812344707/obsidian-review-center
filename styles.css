@@ -358,3 +358,92 @@ body.review-center-overlay-open .workspace-leaf-content[data-type="markdown"] .v
     padding-bottom: calc(150px + env(safe-area-inset-bottom));
   }
 }
+
+/* Color expresses type; labels remain visible in either theme. */
+.review-center-view,
+.review-center-settings {
+  --review-note: var(--color-blue, #3478d4);
+  --review-card: var(--color-purple, #8b5cc7);
+}
+.review-center-category.is-note,
+.review-heatmap.is-note,
+.review-group-settings.is-note,
+.review-card.is-qa { --review-tint: var(--review-note); }
+.review-center-category.is-card,
+.review-heatmap.is-card,
+.review-group-settings.is-card,
+.review-card.is-cloze { --review-tint: var(--review-card); }
+.review-center-category,
+.review-card {
+  background: color-mix(in srgb, var(--review-tint) 8%, var(--background-primary));
+  border-color: color-mix(in srgb, var(--review-tint) 36%, var(--background-modifier-border));
+  border-top: 4px solid var(--review-tint);
+}
+.review-center-category-icon,
+.review-card-kind { color: var(--review-tint); }
+.review-card-kind {
+  font-size: var(--font-small);
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+.review-center-category select { width: 100%; max-width: 100%; }
+.review-center-category .mod-cta { background: var(--review-tint); color: var(--text-on-accent); }
+.review-group-settings,
+.review-heatmap {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  margin: 16px 0;
+  padding: 18px;
+  background: var(--background-primary-alt);
+}
+.review-group-settings { border-left: 3px solid var(--review-tint); }
+.review-group-settings summary { cursor: pointer; font-weight: 600; overflow-wrap: anywhere; }
+.review-group-settings .setting-item { gap: 12px; }
+.review-group-settings .setting-item-control { flex-wrap: wrap; }
+.review-group-settings textarea { min-width: 180px; }
+.review-setting-error { color: var(--text-error); font-size: var(--font-small); }
+.review-setting-error:empty { display: none; }
+.review-heatmap { min-width: 0; }
+.review-heatmap h3 { margin: 0 0 6px; }
+.review-heatmap-summary,
+.review-heatmap-detail { color: var(--text-muted); font-size: var(--font-small); margin: 8px 0; }
+.review-heatmap-scroll { overflow-x: auto; padding: 6px 2px 8px; overscroll-behavior-x: contain; }
+.review-heatmap-chart { width: max-content; }
+.review-heatmap-months { display: grid; gap: 4px; font-size: 10px; color: var(--text-muted); height: 20px; }
+.review-heatmap-months span { white-space: nowrap; }
+.review-heatmap-grid { display: grid; grid-template-rows: repeat(7, 12px); grid-auto-flow: column; grid-auto-columns: 12px; gap: 4px; }
+.review-heatmap .review-heatmap-cell,
+.review-heatmap .review-heatmap-swatch { --heat-opacity: 0%; background: color-mix(in srgb, var(--review-tint) var(--heat-opacity), var(--background-modifier-border)); }
+.review-heatmap-cell {
+  appearance: none; border: none; border-radius: 3px; box-shadow: none;
+  width: 12px; height: 12px; min-width: 0; min-height: 0; padding: 0; margin: 0;
+}
+.review-heatmap-cell:hover { outline: 2px solid var(--text-muted); background: var(--review-tint); }
+.review-heatmap-cell:focus-visible { outline: 2px solid var(--text-normal); outline-offset: 2px; }
+.review-heatmap .level-1 { --heat-opacity: 25%; }
+.review-heatmap .level-2 { --heat-opacity: 50%; }
+.review-heatmap .level-3 { --heat-opacity: 75%; }
+.review-heatmap .level-4 { --heat-opacity: 100%; }
+.review-heatmap-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
+.review-heatmap-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 4px; }
+@media (max-width: 480px) {
+  .review-group-settings, .review-heatmap { padding: 12px; }
+  .review-group-settings .setting-item { flex-direction: column; align-items: stretch; }
+  .review-group-settings .setting-item-control { justify-content: flex-start; }
+  .review-group-settings textarea { width: 100%; }
+}
+/* Obsidian's mobile chrome uses custom safe-area variables, including in emulation. */
+.is-mobile .review-center-view {
+  padding-top: calc(var(--safe-area-inset-top, 0px) + var(--view-header-height, 44px) + 16px);
+  padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + 96px);
+  scroll-padding-top: calc(var(--safe-area-inset-top, 0px) + var(--view-header-height, 44px) + 16px);
+}
+/* Phone layouts already reserve the native header above the view content. */
+.is-phone .review-center-view {
+  min-height: 0;
+  padding-top: 16px;
+  scroll-padding-top: 16px;
+}
+.is-phone .workspace-leaf .review-center-view {
+  height: calc(100% - var(--view-top-spacing, 0px));
+}

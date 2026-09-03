@@ -1,13 +1,14 @@
 import {
   Rating,
   State,
+  StrategyMode,
   createEmptyCard,
   fsrs,
   generatorParameters,
   type Card,
   type Grade,
 } from "ts-fsrs";
-import type { ReviewItem, SerializedFsrsCard } from "./types";
+import type { ReviewItem, ReviewParameters, SerializedFsrsCard } from "./types";
 import { deserializeCard, formatInterval, serializeCard } from "./utils";
 
 export const REVIEW_GRADES: Grade[] = [Rating.Again, Rating.Hard, Rating.Good, Rating.Easy];
@@ -25,31 +26,31 @@ export function createSchedule(now = new Date()): SerializedFsrsCard {
 
 export function previewSchedule(
   item: ReviewItem,
-  retention: number,
+  parameters: ReviewParameters,
   now = new Date(),
 ): Record<Grade, { card: SerializedFsrsCard; interval: string }> {
-  const engine = makeScheduler(retention);
+  const engine = makeScheduler(parameters, item);
   const preview = engine.repeat(deserializeCard(item.schedule), now);
   return {
-    [Rating.Again]: toPreview(preview[Rating.Again].card, now),
-    [Rating.Hard]: toPreview(preview[Rating.Hard].card, now),
-    [Rating.Good]: toPreview(preview[Rating.Good].card, now),
-    [Rating.Easy]: toPreview(preview[Rating.Easy].card, now),
+    [Rating.Again]: toPreview(preview[Rating.Again].card, now, parameters.maximumInterval),
+    [Rating.Hard]: toPreview(preview[Rating.Hard].card, now, parameters.maximumInterval),
+    [Rating.Good]: toPreview(preview[Rating.Good].card, now, parameters.maximumInterval),
+    [Rating.Easy]: toPreview(preview[Rating.Easy].card, now, parameters.maximumInterval),
   };
 }
 
 export function applyRating(
   item: ReviewItem,
   rating: Grade,
-  retention: number,
+  parameters: ReviewParameters,
   now = new Date(),
 ): ReviewItem {
-  const engine = makeScheduler(retention);
+  const engine = makeScheduler(parameters, item);
   const result = engine.next(deserializeCard(item.schedule), now, rating);
   return {
     ...item,
     revision: item.revision + 1,
-    schedule: serializeCard(result.card),
+    schedule: serializeCard(capInterval(result.card, now, parameters.maximumInterval)),
     lastReviewedAt: now.toISOString(),
   };
 }
@@ -72,16 +73,29 @@ export function isDueSchedule(card: SerializedFsrsCard, now = new Date()): boole
   return new Date(card.due).getTime() <= now.getTime();
 }
 
-function makeScheduler(retention: number) {
+function makeScheduler(parameters: ReviewParameters, item: ReviewItem) {
   return fsrs(
     generatorParameters({
-      request_retention: Math.max(0.7, Math.min(0.99, retention)),
+      request_retention: parameters.retention,
+      maximum_interval: parameters.maximumInterval,
+      learning_steps: parameters.learningSteps as import("ts-fsrs").FSRSParameters["learning_steps"],
+      relearning_steps: parameters.relearningSteps as import("ts-fsrs").FSRSParameters["relearning_steps"],
       enable_fuzz: true,
     }),
-  );
+  ).useStrategy(StrategyMode.SEED, () => `${item.id}:${item.acceptedHash}:${item.schedule.reps}`);
 }
 
-function toPreview(card: Card, now: Date): { card: SerializedFsrsCard; interval: string } {
+// ts-fsrs 5.4.1 can add days after applying its maximum to keep grade
+// intervals ordered. Enforce the user's cap for both preview and persistence.
+function capInterval(card: Card, now: Date, maximum: number): Card {
+  if (card.scheduled_days <= maximum) return card;
+  const due = new Date(now);
+  due.setDate(due.getDate() + maximum);
+  return { ...card, scheduled_days: maximum, due };
+}
+
+function toPreview(result: Card, now: Date, maximum: number): { card: SerializedFsrsCard; interval: string } {
+  const card = capInterval(result, now, maximum);
   return {
     card: serializeCard(card),
     interval: formatInterval(card.due, now),

@@ -22,6 +22,8 @@ import type {
   UndoEntry,
 } from "./types";
 import { cloneValue, createId, itemKey } from "./utils";
+import { groupsFor, normalizeSettings, resolveGroup } from "./config";
+import { effectiveReviews } from "./activity";
 
 export class ReviewService {
   records: SourceRecord[] = [];
@@ -29,6 +31,9 @@ export class ReviewService {
   session: ReviewSession | null = null;
   conflicts = 0;
   private undoStack: UndoEntry[] = [];
+  private gradePromise: Promise<QueueEntry | null> | null = null;
+  private hasLoaded = false;
+  restoringSession = false;
 
   constructor(
     private readonly scanner: VaultScanner,
@@ -39,15 +44,17 @@ export class ReviewService {
   ) {}
 
   async refresh(): Promise<void> {
+    if (this.gradePromise) await this.gradePromise;
     const result = await this.scanner.scan();
     this.records = result.records;
     this.history = result.history;
     this.conflicts = result.conflicts;
+    this.hasLoaded = true;
+    this.restoringSession = false;
     if (this.session) {
-      this.session.entryKeys = this.session.entryKeys.filter((key) => this.findAnyEntry(key));
-      if (this.session.currentIndex > this.session.entryKeys.length) {
-        this.session.currentIndex = this.session.entryKeys.length;
-      }
+      const completed = this.session.entryKeys.slice(0, this.session.currentIndex);
+      const remaining = this.session.entryKeys.slice(this.session.currentIndex).filter((key) => this.findAnyEntry(key));
+      this.session.entryKeys = [...completed, ...remaining];
       this.persistSession();
     }
   }
@@ -55,18 +62,19 @@ export class ReviewService {
   restoreLocalSession(session: ReviewSession | null): void {
     if (!session || session.entryKeys.length === 0) return;
     this.session = session;
+    this.restoringSession = !this.hasLoaded;
   }
 
-  counts(mode: ReviewMode): QueueCounts {
-    return getQueueCounts(this.records, mode);
+  counts(mode: ReviewMode, groupId?: string): QueueCounts {
+    return getQueueCounts(this.records, this.history, this.getSettings(), mode, new Date(), groupId);
   }
 
-  allCount(mode: ReviewMode): number {
-    return collectEntries(this.records, mode).length;
+  allCount(mode: ReviewMode, groupId?: string): number {
+    return collectEntries(this.records, mode, this.getSettings(), groupId).length;
   }
 
-  nextDue(mode: ReviewMode): Date | null {
-    const timestamps = collectEntries(this.records, mode)
+  nextDue(mode: ReviewMode, groupId?: string): Date | null {
+    const timestamps = collectEntries(this.records, mode, this.getSettings(), groupId)
       .filter((entry) => entry.item.schedule.reps > 0)
       .map((entry) => new Date(entry.item.schedule.due).getTime())
       .filter(Number.isFinite);
@@ -79,7 +87,7 @@ export class ReviewService {
     return entry?.item.status === "pending-change";
   }
 
-  startSession(mode: ReviewMode, extra = false): QueueEntry | null {
+  startSession(mode: ReviewMode, extra = false, groupId?: string): QueueEntry | null {
     const queue = buildDailyQueue(
       this.records,
       this.history,
@@ -87,10 +95,13 @@ export class ReviewService {
       mode,
       new Date(),
       extra,
+      groupId,
     );
     this.session = {
       id: createId("session"),
       mode,
+      groupId,
+      extra,
       entryKeys: queue.map((entry) => itemKey(entry.sourceId, entry.item.id)),
       currentIndex: 0,
       answerVisible: false,
@@ -102,7 +113,7 @@ export class ReviewService {
   }
 
   currentEntry(): QueueEntry | null {
-    if (!this.session) return null;
+    if (!this.session || this.restoringSession) return null;
     while (this.session.currentIndex < this.session.entryKeys.length) {
       const key = this.session.entryKeys[this.session.currentIndex];
       const entry = this.findEntry(key);
@@ -130,20 +141,29 @@ export class ReviewService {
   }
 
   preview(entry: QueueEntry) {
-    return previewSchedule(entry.item, this.retentionFor(entry.item.kind));
+    return previewSchedule(entry.item, entry.group.parameters);
   }
 
-  async gradeCurrent(rating: Grade): Promise<QueueEntry | null> {
+  gradeCurrent(rating: Grade): Promise<QueueEntry | null> {
+    if (this.gradePromise) return this.gradePromise;
+    this.gradePromise = this.performGrade(rating).finally(() => { this.gradePromise = null; });
+    return this.gradePromise;
+  }
+
+  private async performGrade(rating: Grade): Promise<QueueEntry | null> {
     const entry = this.currentEntry();
     if (!entry || !this.session) return null;
     const record = this.recordById(entry.sourceId);
     if (!record) return null;
     const before = cloneValue(entry.item);
-    const after = applyRating(entry.item, rating, this.retentionFor(entry.item.kind));
+    const after = applyRating(entry.item, rating, entry.group.parameters);
     this.replaceItem(record, after);
     const event = this.makeEvent(record.reviewId, after.id, "review", before.revision, after, rating);
+    event.mode = this.session.mode;
+    event.groupId = entry.group.id;
+    event.wasNew = entry.isNew;
     await this.persistMutation(record, event);
-    this.undoStack.push({ sourceId: record.reviewId, itemId: after.id, before, after: cloneValue(after) });
+    this.undoStack.push({ eventId: event.eventId, sourceId: record.reviewId, itemId: after.id, before, after: cloneValue(after) });
     this.session.currentIndex += 1;
     this.session.answerVisible = false;
     this.appendNewlyDueEntries();
@@ -167,6 +187,8 @@ export class ReviewService {
     };
     this.replaceItem(record, restored);
     const event = this.makeEvent(record.reviewId, restored.id, "undo", current.revision, restored);
+    event.undoOf = undo.eventId;
+    event.mode = this.session.mode;
     await this.persistMutation(record, event);
     const key = itemKey(record.reviewId, restored.id);
     const targetIndex = Math.max(0, this.session.currentIndex - 1);
@@ -179,6 +201,7 @@ export class ReviewService {
 
   finishSession(): void {
     this.session = null;
+    this.restoringSession = false;
     this.undoStack = [];
     this.persistSession();
   }
@@ -187,6 +210,7 @@ export class ReviewService {
     const result: Array<{ record: SourceRecord; item: ReviewItem }> = [];
     for (const record of this.records) {
       if (sourceId && record.reviewId !== sourceId) continue;
+      if (record.sourceStatus === "out-of-scope" || !resolveGroup(record.tags, this.getSettings().cardGroups)) continue;
       for (const item of Object.values(record.cards)) {
         if (item.status === "pending-change") result.push({ record, item });
       }
@@ -247,7 +271,7 @@ export class ReviewService {
 
   async createBackup(prefix = "backup"): Promise<string> {
     const backup: FullBackup = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       exportedAt: new Date().toISOString(),
       pluginVersion: this.pluginVersion,
       settings: cloneValue(this.getSettings()),
@@ -270,9 +294,11 @@ export class ReviewService {
         "rating_label",
         "next_due",
         "device_id",
+        "group_id",
+        "was_new",
       ],
     ];
-    for (const event of this.history.filter((entry) => entry.action === "review")) {
+    for (const event of effectiveReviews(this.history)) {
       const record = recordMap.get(event.sourceId);
       rows.push([
         event.occurredAt,
@@ -284,6 +310,8 @@ export class ReviewService {
         CSV_GRADE_LABELS[event.rating ?? -1] ?? "",
         event.after?.schedule.due ?? "",
         event.deviceId,
+        event.groupId ?? "",
+        event.wasNew === undefined ? "" : String(event.wasNew),
       ]);
     }
     return this.store.writeCsv(rows.map((row) => row.map(csvCell).join(",")).join("\n"));
@@ -303,13 +331,17 @@ export class ReviewService {
     this.history = cloneValue(backup.history);
     this.finishSession();
     return {
-      ...cloneValue(backup.settings),
+      ...normalizeSettings(backup.settings),
       dataFolder: this.getSettings().dataFolder,
     };
   }
 
-  private retentionFor(kind: ReviewItem["kind"]): number {
-    return kind === "note" ? this.getSettings().noteRetention : this.getSettings().cardRetention;
+  requeueDue(): boolean {
+    if (!this.session || this.restoringSession) return false;
+    const before = this.session.entryKeys.length;
+    this.appendNewlyDueEntries();
+    if (before !== this.session.entryKeys.length) this.persistSession();
+    return before !== this.session.entryKeys.length;
   }
 
   private appendNewlyDueEntries(): void {
@@ -319,6 +351,9 @@ export class ReviewService {
       this.history,
       this.getSettings(),
       this.session.mode,
+      new Date(),
+      false,
+      this.session.groupId,
     );
     const existing = new Set(this.session.entryKeys.slice(this.session.currentIndex));
     for (const entry of queue) {
@@ -331,7 +366,8 @@ export class ReviewService {
   }
 
   private findEntry(key: string): QueueEntry | null {
-    const entry = collectEntries(this.records, this.session?.mode ?? "card").find(
+    const entry = buildDailyQueue(this.records, this.history, this.getSettings(), this.session?.mode ?? "card",
+      new Date(), this.session?.extra ?? false, this.session?.groupId).find(
       (candidate) => itemKey(candidate.sourceId, candidate.item.id) === key,
     );
     return entry ?? null;
@@ -339,10 +375,13 @@ export class ReviewService {
 
   private findAnyEntry(key: string): QueueEntry | null {
     for (const record of this.records) {
+      const group = resolveGroup(record.tags, groupsFor(this.getSettings(), this.session?.mode ?? "card"));
+      if (!group || (this.session?.groupId && group.id !== this.session.groupId) || record.sourceStatus === "out-of-scope" || record.sourceStatus === "deleted") continue;
       const items = this.session?.mode === "note" ? [record.note] : Object.values(record.cards);
       for (const item of items) {
         if (itemKey(record.reviewId, item.id) !== key) continue;
         return {
+          group,
           sourceId: record.reviewId,
           sourcePath: record.sourcePath,
           sourceTitle: record.sourceTitle,
@@ -406,7 +445,7 @@ function csvCell(value: string): string {
 
 function validateBackup(value: FullBackup): void {
   if (
-    value.schemaVersion !== 1 ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     !Array.isArray(value.records) ||
     !Array.isArray(value.history) ||
     !value.settings

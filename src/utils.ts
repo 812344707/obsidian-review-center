@@ -78,19 +78,6 @@ export function pathIsInside(path: string, folder: string): boolean {
   return path === normalizedFolder || path.startsWith(`${normalizedFolder}/`);
 }
 
-export function isWatchedPath(
-  path: string,
-  watchedFolders: string[],
-  excludedFolders: string[],
-  dataFolder: string,
-): boolean {
-  if (pathIsInside(path, dataFolder)) return false;
-  if (watchedFolders.length === 0) return false;
-  const included = watchedFolders.some((folder) => pathIsInside(path, folder));
-  const excluded = excludedFolders.some((folder) => pathIsInside(path, folder));
-  return included && !excluded;
-}
-
 export function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }

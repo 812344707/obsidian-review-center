@@ -1,3 +1,4 @@
+import { normalizeSettings } from "../src/config";
 import { describe, expect, it } from "vitest";
 import { createSchedule } from "../src/scheduler";
 import { buildDailyQueue } from "../src/queue";
@@ -8,20 +9,12 @@ import type {
   SourceRecord,
 } from "../src/types";
 
-const settings: ReviewCenterSettings = {
-  watchedFolders: ["资料"],
-  excludedFolders: [],
-  reviewHeading: "复习",
-  reviewHeadingLevel: 2,
-  dataFolder: "复习中心数据",
-  noteNewLimit: 1,
-  noteReviewLimit: 1,
-  cardNewLimit: 1,
-  cardReviewLimit: 1,
-  noteRetention: 0.85,
-  cardRetention: 0.9,
-  autoOpenDashboard: false,
-};
+const settings: ReviewCenterSettings = normalizeSettings(null);
+settings.noteGroups[0].tags = ["测试"];
+settings.cardGroups[0].tags = ["测试"];
+settings.cardGroups[0].parameters.newLimit = 1;
+settings.cardGroups[0].parameters.reviewLimit = 1;
+
 
 function makeItem(id: string, introducedAt: string, due: string, reps: number): ReviewItem {
   const schedule = createSchedule(new Date(introducedAt));
@@ -55,7 +48,7 @@ function makeRecord(reviewId: string, cards: ReviewItem[]): SourceRecord {
     sourceTitle: reviewId,
     sourceCreatedAt: created,
     updatedAt: created,
-    tags: [],
+    tags: ["#测试"],
     sourceStatus: "active",
     warnings: [],
     note: makeItem("note", created, created, 1),
@@ -99,7 +92,7 @@ describe("buildDailyQueue", () => {
       },
     ];
 
-    const queue = buildDailyQueue(records, history, settings, "card", now);
+    const queue = buildDailyQueue(records, history, { ...settings, cardGroups: [{ ...settings.cardGroups[0], parameters: { ...settings.cardGroups[0].parameters, reviewLimit: 2 } }] }, "card", now);
     expect(queue.map((entry) => entry.item.id)).toEqual(["repeat", "other"]);
   });
 
