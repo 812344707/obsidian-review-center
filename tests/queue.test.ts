@@ -92,7 +92,7 @@ describe("buildDailyQueue", () => {
       },
     ];
 
-    const queue = buildDailyQueue(records, history, { ...settings, cardGroups: [{ ...settings.cardGroups[0], parameters: { ...settings.cardGroups[0].parameters, reviewLimit: 2 } }] }, "card", now);
+    const queue = buildDailyQueue(records, history, { ...settings, presets: settings.presets!.map((p) => p.mode === "card" ? { ...p, parameters: { ...p.parameters, reviewLimit: 2 } } : p) }, "card", now);
     expect(queue.map((entry) => entry.item.id)).toEqual(["repeat", "other"]);
   });
 

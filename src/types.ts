@@ -38,6 +38,9 @@ export interface ReviewItem {
   schedule: SerializedFsrsCard;
   status: ReviewItemStatus;
   lastReviewedAt?: string;
+  buriedUntil?: string;
+  buriedBy?: string;
+  leech?: boolean;
 }
 
 export interface SourceRecord {
@@ -65,7 +68,10 @@ export type HistoryAction =
   | "remove"
   | "delete"
   | "change-keep"
-  | "change-reset";
+  | "change-reset"
+  | "bury"
+  | "unbury"
+  | "reschedule";
 
 export interface HistoryEvent {
   schemaVersion: 1;
@@ -82,6 +88,12 @@ export interface HistoryEvent {
   mode?: ReviewMode;
   groupId?: string;
   wasNew?: boolean;
+  tagPath?: string;
+  sourceTags?: string[];
+  presetId?: string;
+  durationMs?: number;
+  /** Captured at rating time; optional so older histories and backups remain readable. */
+  beforeSchedule?: SerializedFsrsCard;
   undoOf?: string;
   after: ReviewItem | null;
 }
@@ -93,12 +105,39 @@ export interface ReviewParameters {
   learningSteps: string[];
   relearningSteps: string[];
   maximumInterval: number;
+  newIgnoreReviewLimit?: boolean;
+  limitsFromTop?: boolean;
+  insertion?: "sequential" | "random";
+  newGather?: "created" | "created-desc" | "group" | "random-note" | "random-card";
+  newSort?: "gather" | "type" | "random-note" | "random";
+  newOrder?: "before" | "mixed" | "after";
+  interdayOrder?: "before" | "mixed" | "after";
+  reviewSort?: "due" | "due-random" | "group" | "interval" | "interval-desc" | "difficulty" | "difficulty-desc" | "retention" | "retention-desc" | "random";
+  leechThreshold?: number;
+  leechAction?: "tag" | "suspend";
+  buryNew?: boolean;
+  buryReview?: boolean;
+  buryInterday?: boolean;
+  weights?: number[];
+  historyFilter?: string;
+  healthCheck?: boolean;
+  rescheduleOnChange?: boolean;
 }
 
+export interface ReviewPreset { id: string; name: string; mode: ReviewMode; parameters: ReviewParameters }
+export interface NodeOptions {
+  presetId?: string;
+  limits?: { newLimit?: number; reviewLimit?: number };
+  today?: { date: string; newLimit?: number; reviewLimit?: number };
+  retention?: number;
+}
+export interface ReviewScope { mode: ReviewMode; groupId: string; tagPath?: string }
 export interface ReviewGroup {
   id: string;
   name: string;
   tags: string[];
+  presetId?: string;
+  nodes?: Record<string, NodeOptions>;
   parameters: ReviewParameters;
 }
 
@@ -112,10 +151,11 @@ export interface ReviewCenterSettings {
   reviewCalloutTypes: string[];
   dataFolder: string;
   autoOpenDashboard: boolean;
+  presets?: ReviewPreset[];
 }
 
 export interface StoredPluginData {
-  schemaVersion: 3;
+  schemaVersion: 4;
   settings: ReviewCenterSettings;
 }
 
@@ -146,10 +186,14 @@ export interface QueueEntry {
   tags: string[];
   item: ReviewItem;
   isNew: boolean;
+  tagPath?: string;
+  presetId?: string;
 }
 
 export interface QueueCounts {
   due: number;
+  learning: number;
+  review: number;
   new: number;
   suspended: number;
   pendingChanges: number;
@@ -162,11 +206,15 @@ export interface ReviewSession {
   id: string;
   mode: ReviewMode;
   groupId?: string;
+  tagPath?: string;
   extra?: boolean;
   entryKeys: string[];
   currentIndex: number;
   answerVisible: boolean;
   startedAt: string;
+  currentStartedAt?: string;
+  currentElapsedMs?: number;
+  orderSeed?: string;
 }
 
 export interface UndoEntry {
@@ -175,10 +223,14 @@ export interface UndoEntry {
   itemId: string;
   before: ReviewItem;
   after: ReviewItem;
+  siblings?: Array<{ before: ReviewItem; after: ReviewItem; eventId: string }>;
 }
 
 export interface FullBackup {
-  schemaVersion: 1 | 2 | 3;
+  schemaVersion: 1 | 2 | 3 | 4;
+  kind?: "full" | "scope";
+  scope?: ReviewScope;
+  itemKeys?: string[];
   exportedAt: string;
   pluginVersion: string;
   settings: ReviewCenterSettings;

@@ -4,3 +4,6 @@ main.js
 .DS_Store
 coverage/
 release/
+.build-tools/
+.build/
+optimizer/target/

@@ -1,10 +1,12 @@
 import esbuild from "esbuild";
 import process from "process";
+import fs from "node:fs";
 import { builtinModules } from "node:module";
 
 const production = process.argv[2] === "production";
 
 const context = await esbuild.context({
+  define: { __OPTIMIZER_WORKER__: JSON.stringify(fs.readFileSync("optimizer/worker.cjs", "utf8")), __OPTIMIZER_WASM__: JSON.stringify(fs.readFileSync("assets/optimizer.wasm").toString("base64")) },
   entryPoints: ["src/main.ts"],
   bundle: true,
   external: [

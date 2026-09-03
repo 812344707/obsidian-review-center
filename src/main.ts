@@ -1,5 +1,6 @@
 import {
   MarkdownView,
+  Modal,
   Notice,
   Plugin,
   TFile,
@@ -19,13 +20,18 @@ import type {
   ReviewMode,
   ReviewSession,
   StoredPluginData,
+  ReviewScope,
+  UndoEntry,
 } from "./types";
-import { createId, pathIsInside } from "./utils";
-import { normalizeSettings, validateDataFolder } from "./config";
-import { calloutRanges } from "./parser";
+import { createId, pathIsInside, cloneValue } from "./utils";
+import { normalizeSettings, validateDataFolder, groupsFor } from "./config";
 import { copyDataDirectory } from "./data-migration";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import { applyBulkTags, type BulkTagPreview, type BulkTagRequest, type BulkTagResult } from "./tags";
+import { OptionsWorkspace, ReviewOptionsModal, RenameGroupModal, ConfirmActionModal } from "./options";
+import { TagOperationModal } from "./tag-operations";
+import { OperationHistoryModal, type OperationJob } from "./operation-history";
+import { planReschedule, createRescheduleJob, runRescheduleJob } from "./reschedule";
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 
 export default class ReviewCenterPlugin extends Plugin {
@@ -33,6 +39,8 @@ export default class ReviewCenterPlugin extends Plugin {
   store!: ReviewStore;
   service!: ReviewService;
   showDashboard = true;
+  optionsWorkspace!: OptionsWorkspace;
+  private originalSettings?: ReviewCenterSettings;
 
   private overlay!: ReviewOverlay;
   private overlayMode: OverlayMode | null = null;
@@ -47,6 +55,7 @@ export default class ReviewCenterPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.optionsWorkspace = new OptionsWorkspace(this);
     const deviceId = this.getOrCreateDeviceId();
     const sessionId = createId("session");
     this.store = new ReviewStore(this.app, () => this.settings, sessionId, deviceId);
@@ -56,9 +65,10 @@ export default class ReviewCenterPlugin extends Plugin {
       this.store,
       () => this.settings,
       this.manifest.version,
-      (session) => this.saveLocalSession(session),
+      (session, undo) => this.saveLocalSession(session, undo),
     );
-    this.service.restoreLocalSession(this.loadLocalSession());
+    const saved = this.loadLocalSession();
+    this.service.restoreLocalSession(saved.session, saved.undo);
     this.overlay = new ReviewOverlay(this);
     this.addChild(this.overlay);
 
@@ -76,8 +86,51 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.service?.setTimingActive(false);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.overlay?.detach();
+    this.optionsWorkspace?.dispose();
+    this.optionsWorkspace?.cancelJob?.();
+  }
+
+  openPluginSettings(): void {
+    const app = this.app as unknown as { setting: { open(): void; openTabById(id: string): void } };
+    app.setting.open(); app.setting.openTabById(this.manifest.id);
+  }
+  closePluginSettings(): void { (this.app as unknown as { setting: { close(): void } }).setting.close(); }
+  async openManagement(): Promise<void> {
+    await this.openReviewCenter(true);
+    const view = this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW)[0]?.view;
+    if (view instanceof ReviewCenterView) view.showPage("manage");
+  }
+  openOperationHistory(): void { new OperationHistoryModal(this).open(); }
+  openReviewOptions(scope: ReviewScope): void { new ReviewOptionsModal(this, scope).open(); }
+  renameReviewNode(scope: ReviewScope): void {
+    if (scope.tagPath) new TagOperationModal(this, scope, true).open(); else new RenameGroupModal(this, scope).open();
+  }
+  deleteReviewNode(scope: ReviewScope): void {
+    if (scope.tagPath) { new TagOperationModal(this, scope, false).open(); return; }
+    const group = groupsFor(this.settings, scope.mode).find((g) => g.id === scope.groupId); if (!group) return;
+    new ConfirmActionModal(this, "删除复习组", `删除“${group.name}”的组配置，保留原笔记、卡片进度和历史。`, async () => {
+      const next = cloneValue(this.settings), groups = groupsFor(next, scope.mode), index = groups.findIndex((g) => g.id === scope.groupId);
+      if (index >= 0) groups.splice(index, 1); await this.updateSettings(next);
+    }).open();
+  }
+  async persistSettingsInMaintenance(next: ReviewCenterSettings): Promise<void> {
+    if (!this.service.maintenance) throw new Error("保存批量设置需要先暂停写入。");
+    const normalized = normalizeSettings(next);
+    await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
+    this.settings = normalized;
+  }
+  async saveReviewOptions(next: ReviewCenterSettings): Promise<void> {
+    const normalized = normalizeSettings(next), planned = planReschedule(this.service.records, this.service.history, this.settings, normalized);
+    if (!planned.entries.length) { await this.updateSettings(normalized); if (planned.skipped.length) new Notice(planned.skipped.join("\n"), 12000); return; }
+    await new Promise<void>((resolve, reject) => {
+      const preview = planned.entries.slice(0, 8).map((e) => `${e.path}：${new Date(e.before.schedule.due).toLocaleDateString()} → ${new Date(e.after.schedule.due).toLocaleDateString()}`).join("\n");
+      new ConfirmActionModal(this, "应用参数并重新排程", `将调整 ${planned.entries.length} 项到期时间，跳过 ${planned.skipped.length} 项。先备份，再暂停评分、扫描和其他批量写入。\n${preview}`, async () => {
+        const operation = createRescheduleJob(this, normalized, planned.entries); await runRescheduleJob(this, operation.id, operation.job); resolve();
+      }, () => reject(new Error("已取消重新排程，草稿保留。"))).open();
+    });
   }
 
   async updateSettings(next: ReviewCenterSettings): Promise<void> {
@@ -85,16 +138,7 @@ export default class ReviewCenterPlugin extends Plugin {
     if (next.dataFolder !== this.settings.dataFolder) throw new Error("请使用“应用并迁移”更换数据目录。");
     const normalized = normalizeSettings(next);
     await this.service.runMaintenance(async () => {
-      const removed = this.settings.reviewCalloutTypes.filter((type) => !normalized.reviewCalloutTypes.includes(type));
-      if (removed.length) {
-        const used: string[] = [];
-        for (const file of this.app.vault.getMarkdownFiles()) {
-          if (pathIsInside(file.path, this.settings.dataFolder)) continue;
-          if (calloutRanges(await this.app.vault.read(file)).some((range) => removed.includes(range.type))) used.push(file.path);
-        }
-        if (used.length) throw new Error("这些类型仍被 " + used.length + " 篇笔记使用，暂不能移除：" + used.slice(0, 3).join("、"));
-      }
-      await this.saveData({ schemaVersion: 3, settings: normalized } satisfies StoredPluginData);
+      await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
       this.settings = normalized;
     });
     await this.renderOpenViews();
@@ -109,13 +153,13 @@ export default class ReviewCenterPlugin extends Plugin {
     await this.service.runMaintenance(async () => {
       await this.store.flush();
       await this.store.writeBackup({
-        schemaVersion: 3, exportedAt: new Date().toISOString(), pluginVersion: this.manifest.version,
+        schemaVersion: 4, exportedAt: new Date().toISOString(), pluginVersion: this.manifest.version,
         settings: this.settings, records: this.service.records, history: this.service.history,
       }, "pre-directory-migration");
       const migration = await copyDataDirectory(this.app.vault.adapter, this.settings.dataFolder, target);
       const next = { ...this.settings, dataFolder: migration.target };
       // Save before switching the store's live path. Failure leaves the old path active.
-      await this.saveData({ schemaVersion: 3, settings: next } satisfies StoredPluginData);
+      await this.saveData({ schemaVersion: 4, settings: next } satisfies StoredPluginData);
       this.settings = next;
       try { await migration.complete(); } catch (error) { console.warn("[复习中心] 目录已切换，完成标记待重试", error); }
     });
@@ -152,6 +196,7 @@ export default class ReviewCenterPlugin extends Plugin {
   async openReviewCenter(showDashboard = true): Promise<void> {
     if (this.overlayMode) this.rememberActiveSourceLeaf();
     this.showDashboard = showDashboard;
+    this.service.setTimingActive(!showDashboard && !document.hidden);
     this.overlayMode = null;
     this.overlay.detach();
     const workspace = this.app.workspace;
@@ -167,23 +212,13 @@ export default class ReviewCenterPlugin extends Plugin {
     }
     await workspace.revealLeaf(leaf);
     if (leaf.view instanceof ReviewCenterView) await leaf.view.render();
-    if (showDashboard && this.service.pendingChanges().length > 0) {
-      window.setTimeout(() => {
-        new ChangedCardsModal(
-          this.app,
-          this.service,
-          undefined,
-          () => void this.renderOpenViews(),
-        ).open();
-      }, 0);
-    }
   }
 
-  async startReview(mode: ReviewMode, extra = false, groupId?: string): Promise<void> {
+  async startReview(mode: ReviewMode, extra = false, groupId?: string, tagPath?: string): Promise<void> {
     if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     await this.refreshData();
-    const entry = this.service.startSession(mode, extra, groupId);
-    if (!entry) {
+    const entry = this.service.startOrResumeSession(mode, extra, groupId, tagPath);
+    if (!entry && !this.service.currentPendingChange()) {
       new Notice("当前没有可复习内容");
       await this.openReviewCenter(true);
       return;
@@ -191,6 +226,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.showDashboard = false;
     if (mode === "note") await this.openActiveNote();
     else await this.openReviewCenter(false);
+    this.service.setTimingActive(!document.hidden);
   }
 
   async continueReview(): Promise<void> {
@@ -205,6 +241,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.showDashboard = false;
     if (session.mode === "note") await this.openActiveNote();
     else await this.openReviewCenter(false);
+    this.service.setTimingActive(!document.hidden);
   }
 
   async openCardSource(entry: QueueEntry, edit: boolean): Promise<void> {
@@ -278,6 +315,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async exitReview(): Promise<void> {
+    this.service.setTimingActive(false);
     this.rememberActiveSourceLeaf();
     this.overlay.detach();
     this.overlayMode = null;
@@ -289,7 +327,13 @@ export default class ReviewCenterPlugin extends Plugin {
       const restoredSettings = await this.service.restoreBackup(path);
       await this.updateSettings(restoredSettings);
       await this.refreshData();
-      new Notice("备份已恢复；恢复前数据已另存为 pre-restore 备份");
+      new Notice("备份已恢复；恢复前数据已另存为 pre-restore 备份。");
+      if (this.service.restoreConflicts.length) {
+        const report = new Modal(this.app); report.titleEl.setText("范围恢复报告");
+        report.contentEl.createEl("p", { text: `${this.service.restoreConflicts.length} 项与现有内容冲突，已保留本地数据：` });
+        for (const item of this.service.restoreConflicts) report.contentEl.createEl("p", { text: item });
+        report.open();
+      }
       await this.openReviewCenter(true);
     } catch (error) {
       console.error("[复习中心] 恢复失败", error);
@@ -299,6 +343,12 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private async initializeAfterLayout(): Promise<void> {
     await this.refreshData();
+    for (const { id, data } of await this.store.loadJobs<OperationJob>()) {
+      if (data.kind === "reschedule" && data.state === "pending") {
+        try { await runRescheduleJob(this, id, data); }
+        catch (e) { new Notice("未完成的重新排程需要处理：" + String(e), 15000); }
+      }
+    }
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView && activeView.file?.path === this.service.currentEntry()?.sourcePath) {
       this.sourceLeaf = activeView.leaf;
@@ -331,6 +381,7 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private registerCommands(): void {
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
+    this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
     this.addCommand({ id: "insert-review-callout", name: "插入复习折叠块", editorCallback: (editor) => {
       editor.replaceSelection("\n> [!review]- 复习\n> 问:: 这里写问题\n> 答:: 这里写答案。\n");
     } });
@@ -535,6 +586,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private registerWorkspaceEvents(): void {
+    this.registerDomEvent(document, "visibilitychange", () => this.syncActiveLeaf(this.app.workspace.getMostRecentLeaf()));
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => this.syncActiveLeaf(leaf)),
     );
@@ -548,6 +600,9 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private syncActiveLeaf(leaf: WorkspaceLeaf | null): void {
+    const entry = this.service.currentEntry();
+    const reviewing = !this.showDashboard && (leaf?.view.getViewType() === REVIEW_CENTER_VIEW || (leaf?.view as MarkdownView | undefined)?.file?.path === entry?.sourcePath);
+    this.service.setTimingActive(!document.hidden && reviewing);
     if (leaf && (leaf.getViewState().type === "markdown" || leaf.view.getViewType() === "markdown")) {
       this.sourceLeaf = leaf;
     }
@@ -577,15 +632,18 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private async loadSettings(): Promise<void> {
     const stored = await this.loadData() as { schemaVersion?: number; settings?: ReviewCenterSettings } | null;
+    this.originalSettings = stored?.settings;
     this.settings = normalizeSettings(stored?.settings);
-    this.schemaUpgrade = stored?.schemaVersion !== 3;
-    if (stored?.settings && stored.schemaVersion !== 2 && stored.schemaVersion !== 3) this.legacySettings = stored.settings;
+    this.schemaUpgrade = stored?.schemaVersion !== 4;
+    if (stored?.settings && ![2, 3, 4].includes(stored.schemaVersion ?? 0)) this.legacySettings = stored.settings;
   }
 
   private async ensureMigrated(): Promise<void> {
     if (!this.legacySettings) {
       if (this.schemaUpgrade) {
-        await this.saveData({ schemaVersion: 3, settings: this.settings } satisfies StoredPluginData);
+        await this.store.initialize();
+        if (this.originalSettings) await this.store.writeBackup({ schemaVersion: 3, exportedAt: new Date().toISOString(), pluginVersion: "0.3.0", settings: this.originalSettings, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory() }, "pre-options-migration");
+        await this.saveData({ schemaVersion: 4, settings: this.settings } satisfies StoredPluginData);
         this.schemaUpgrade = false;
       }
       return;
@@ -597,7 +655,7 @@ export default class ReviewCenterPlugin extends Plugin {
         schemaVersion: 1, exportedAt: new Date().toISOString(), pluginVersion: "0.1.0",
         settings: this.legacySettings!, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory(),
       }, "pre-tags-migration");
-      await this.saveData({ schemaVersion: 3, settings: this.settings } satisfies StoredPluginData);
+      await this.saveData({ schemaVersion: 4, settings: this.settings } satisfies StoredPluginData);
       this.legacySettings = null;
       this.schemaUpgrade = false;
       this.service.finishSession();
@@ -633,19 +691,28 @@ export default class ReviewCenterPlugin extends Plugin {
     return value;
   }
 
-  private saveLocalSession(session: ReviewSession | null): void {
+  private saveLocalSession(session: ReviewSession | null, undo: UndoEntry[]): void {
     const key = `${this.localPrefix()}:session`;
-    if (session) window.localStorage.setItem(key, JSON.stringify(session));
+    if (session) {
+      try { window.localStorage.setItem(key, JSON.stringify({ ...session, undoStack: undo.slice(-1) })); }
+      catch { window.localStorage.setItem(key, JSON.stringify(session)); }
+    }
     else window.localStorage.removeItem(key);
   }
 
-  private loadLocalSession(): ReviewSession | null {
+  private loadLocalSession(): { session: ReviewSession | null; undo: UndoEntry[] } {
     const raw = window.localStorage.getItem(`${this.localPrefix()}:session`);
-    if (!raw) return null;
+    const empty = { session: null, undo: [] };
+    if (!raw) return empty;
     try {
-      return JSON.parse(raw) as ReviewSession;
+      const { undoStack, ...session } = JSON.parse(raw);
+      if (!session.id || !["note", "card"].includes(session.mode) || !Array.isArray(session.entryKeys) ||
+        !session.entryKeys.every((key: unknown) => typeof key === "string") || !Number.isInteger(session.currentIndex) || session.currentIndex < 0) return empty;
+      const undo = Array.isArray(undoStack) ? undoStack.filter((entry) => entry?.eventId && entry?.sourceId && entry?.itemId &&
+        entry.before?.id === entry.itemId && entry.after?.id === entry.itemId && entry.before?.schedule && entry.after?.schedule) : [];
+      return { session: session as ReviewSession, undo };
     } catch {
-      return null;
+      return empty;
     }
   }
 

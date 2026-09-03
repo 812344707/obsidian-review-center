@@ -42,6 +42,28 @@ export class ReviewStore {
     if (await this.app.vault.adapter.read(path) !== payload) throw new Error("原文备份核对失败，未转换笔记。");
   }
 
+  async saveJob(id: string, data: unknown): Promise<void> {
+    if (!/^[a-z0-9-]+$/i.test(id)) throw new Error("操作标识无效。");
+    const folder = this.baseFolder() + "/operations/" + id;
+    await this.ensureFolder(folder);
+    const files = await this.listFilesRecursively(folder);
+    const sequence = Math.max(0, ...files.map((path) => Number(path.split("/").pop()?.replace(".json", "")) || 0)) + 1;
+    const path = folder + "/" + String(sequence).padStart(8, "0") + ".json";
+    const text = JSON.stringify(data);
+    await this.app.vault.adapter.write(path, text);
+    if (await this.app.vault.adapter.read(path) !== text) throw new Error("操作记录写入校验失败，已停止。");
+  }
+  async loadJobs<T>(): Promise<Array<{ id: string; data: T }>> {
+    const files = (await this.listFilesRecursively(this.baseFolder() + "/operations")).filter((p) => p.endsWith(".json")).sort().reverse();
+    const jobs = new Map<string, T>();
+    for (const path of files) {
+      const id = path.split("/").at(-2)!; if (jobs.has(id)) continue;
+      try { jobs.set(id, JSON.parse(await this.app.vault.adapter.read(path)) as T); }
+      catch { console.warn("[复习中心] 中断的操作记录，读取前一版本", path); }
+    }
+    return [...jobs].map(([id, data]) => ({ id, data }));
+  }
+
   async loadRecord(reviewId: string): Promise<SourceRecord | null> {
     const path = this.recordPath(reviewId);
     if (!(await this.app.vault.adapter.exists(path))) return null;
@@ -138,7 +160,10 @@ export class ReviewStore {
   async writeBackup(backup: FullBackup, prefix = "backup"): Promise<string> {
     const fileName = `${prefix}-${safeTimestamp(new Date())}-${createId("export").slice(-8)}.json`;
     const path = normalizePath(`${this.exportsFolder()}/${fileName}`);
-    await this.app.vault.adapter.write(path, `${JSON.stringify(backup, null, 2)}\n`);
+    await this.ensureFolder(this.exportsFolder());
+    const payload = `${JSON.stringify(backup, null, 2)}\n`;
+    await this.app.vault.adapter.write(path, payload);
+    if (await this.app.vault.adapter.read(path) !== payload) throw new Error("备份校验失败。");
     return path;
   }
 

@@ -62,6 +62,7 @@ export function resetSchedule(item: ReviewItem, now = new Date()): ReviewItem {
     schedule: createSchedule(now),
     lastReviewedAt: undefined,
     status: "active",
+    buriedUntil: undefined, buriedBy: undefined, leech: undefined,
   };
 }
 
@@ -76,6 +77,7 @@ export function isDueSchedule(card: SerializedFsrsCard, now = new Date()): boole
 function makeScheduler(parameters: ReviewParameters, item: ReviewItem) {
   return fsrs(
     generatorParameters({
+      ...(parameters.weights ? { w: parameters.weights } : {}),
       request_retention: parameters.retention,
       maximum_interval: parameters.maximumInterval,
       learning_steps: parameters.learningSteps as import("ts-fsrs").FSRSParameters["learning_steps"],

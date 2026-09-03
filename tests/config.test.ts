@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { createGroup, normalizeSettings, parseSteps, parseTags, resolveGroup } from "../src/config";
 
 describe("tag scopes and migration", () => {
+  it("uses review only for a fresh install without replacing existing custom or empty scopes", () => {
+    expect(normalizeSettings(null).noteGroups[0].tags).toEqual(["review"]);
+    expect(normalizeSettings(null).cardGroups[0].tags).toEqual(["review"]);
+    const settings = normalizeSettings(null);
+    settings.noteGroups[0].tags = ["医学/经典"];
+    settings.cardGroups[0].tags = [];
+    expect(normalizeSettings(settings)).toEqual(settings);
+  });
   it("uses OR matching, descendant boundaries, case insensitivity and specificity", () => {
     const parent = { ...createGroup("note"), tags: ["TCM", "科研"] };
     const child = { ...createGroup("note"), tags: ["tcm/伤寒"] };
@@ -26,6 +34,11 @@ describe("tag scopes and migration", () => {
     const settings = normalizeSettings({ noteGroups: [], cardGroups: [], showCardHeatmap: false });
     expect(normalizeSettings(settings)).toEqual(settings);
     expect(settings.showNoteHeatmap).toBe(true);
+  });
+  it("uses only the fixed review callout type when older settings contain extras", () => {
+    const settings = normalizeSettings({ reviewCalloutTypes: ["review", "study-card"] });
+    expect(settings.reviewCalloutTypes).toEqual(["review"]);
+    expect(normalizeSettings(settings).reviewCalloutTypes).toEqual(["review"]);
   });
   it("validates hierarchical tags and short learning steps without accepting broken input", () => {
     expect(parseTags("#TCM/伤寒, 科研\n#tcm/伤寒")).toEqual(["tcm/伤寒", "科研"]);

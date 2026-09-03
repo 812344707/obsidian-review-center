@@ -1,5 +1,6 @@
 import {
   ItemView,
+  Menu,
   MarkdownRenderer,
   Notice,
   setIcon,
@@ -10,14 +11,33 @@ import { renderCloze } from "./parser";
 import { GRADE_LABELS, REVIEW_GRADES } from "./scheduler";
 import type ReviewCenterPlugin from "./main";
 import { groupsFor, resolveGroup } from "./config";
-import { heatmapDays } from "./activity";
+import { buildReviewTree, flattenTree, type ReviewTreeNode } from "./tree";
+import { defaultStatisticsState, renderStatistics } from "./statistics-view";
 import type { QueueEntry, ReviewItem, ReviewMode, SourceRecord } from "./types";
 
 export const REVIEW_CENTER_VIEW = "review-center-view";
 
 export class ReviewCenterView extends ItemView {
   private renderVersion = 0;
-  private selectedGroups: Partial<Record<ReviewMode, string>> = {};
+  private homeMode: ReviewMode = "note";
+  private selected: Partial<Record<ReviewMode, string>> = {};
+  private expanded: Record<string, boolean> = {};
+  private homeScroll = 0;
+  private statsScroll = 0;
+  private statistics = defaultStatisticsState();
+  private page: "home" | "stats" | "manage" = "home";
+  private get homeKey(): string { return `review-center:${this.app.vault.getName()}:home`; }
+  showPage(page: "home" | "stats" | "manage"): void {
+    if (page === "stats" && this.page !== "stats") {
+      this.statistics.mode = this.homeMode;
+      this.statistics.scopes[this.homeMode] = this.selected[this.homeMode] ?? "";
+      this.statsScroll = 0;
+    }
+    this.page = page; void this.render();
+  }
+  private saveHome(): void {
+    window.localStorage.setItem(this.homeKey, JSON.stringify({ mode: this.homeMode, selected: this.selected, expanded: this.expanded, scroll: this.homeScroll, statistics: this.statistics }));
+  }
 
   constructor(leaf: WorkspaceLeaf, readonly plugin: ReviewCenterPlugin) {
     super(leaf);
@@ -36,13 +56,26 @@ export class ReviewCenterView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    try {
+      const state = JSON.parse(window.localStorage.getItem(this.homeKey) ?? "{}");
+      this.homeMode = state.mode === "card" ? "card" : "note";
+      this.selected = state.selected ?? {}; this.expanded = state.expanded ?? {}; this.homeScroll = state.scroll ?? 0;
+      const stats = state.statistics;
+      if (stats) this.statistics = { mode: stats.mode === "card" ? "card" : "note", scopes: stats.scopes && typeof stats.scopes === "object" ? stats.scopes : {}, forecastDays: stats.forecastDays === 30 ? 30 : 7, activityDays: stats.activityDays === 7 ? 7 : 30, activityMetric: stats.activityMetric === "time" ? "time" : "items" };
+    } catch { /* A damaged presentation preference never affects review data. */ }
     await this.render();
   }
 
   async render(): Promise<void> {
     const version = ++this.renderVersion;
     const container = this.contentEl;
+    const scroll = container.querySelector<HTMLElement>(".review-tree-scroll");
+    if (scroll) { this.homeScroll = scroll.scrollTop; this.saveHome(); }
+    if (container.hasClass("is-statistics")) this.statsScroll = container.scrollTop;
+    const focused = container.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.statsFocus : undefined;
     container.empty();
+    container.removeClass("is-tree-home");
+    container.removeClass("is-statistics");
     container.addClass("review-center-view");
     if (this.plugin.service.restoringSession) {
       container.createEl("p", { text: "正在读取复习进度…", attr: { role: "status" } });
@@ -57,130 +90,102 @@ export class ReviewCenterView extends ItemView {
     } else {
       this.renderHome(container);
     }
+    if (container.hasClass("is-statistics")) {
+      container.scrollTop = this.statsScroll;
+      if (focused) container.querySelector<HTMLElement>(`[data-stats-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+    }
   }
 
   private renderHome(container: HTMLElement): void {
-    const header = container.createDiv({ cls: "review-center-header" });
-    const titleGroup = header.createDiv();
-    titleGroup.createEl("h1", { text: "复习中心" });
-    titleGroup.createEl("p", { text: "先选类型，再按到期顺序开始。" });
-    const refresh = header.createEl("button", {
-      cls: "review-center-icon-button",
-      attr: { "aria-label": "重新扫描" },
-    });
-    setIcon(refresh, "refresh-cw");
-    refresh.addEventListener("click", () => {
-      void (async () => {
-        refresh.disabled = true;
-        await this.plugin.refreshData(true);
-        await this.render();
-      })();
-    });
-
-    if (![...this.plugin.settings.noteGroups, ...this.plugin.settings.cardGroups].some((group) => group.tags.length)) {
-      const onboarding = container.createDiv({ cls: "review-center-callout" });
-      onboarding.createEl("strong", { text: "先设置复习标签" });
-      onboarding.createEl("p", {
-        text: "请在设置 → 复习中心中分别配置笔记和卡片标签集。原有复习进度已保留，匹配标签后继续使用。",
-      });
-    }
-
-    const pendingCount = this.plugin.service.pendingChanges().length;
-    if (pendingCount > 0) {
-      const pending = container.createDiv({ cls: "review-center-callout is-warning" });
-      pending.createEl("strong", { text: `${pendingCount} 张卡片内容已修改` });
-      pending.createEl("p", { text: "需要决定保留原进度还是重置为新卡。" });
-      pending
-        .createEl("button", { cls: "mod-cta", text: "处理变更" })
-        .addEventListener("click", () => {
-          new ChangedCardsModal(this.app, this.plugin.service, undefined, () => void this.render()).open();
+    if (this.page !== "home") {
+      const bar = container.createDiv({ cls: "review-home-toolbar" });
+      bar.createEl("button", { text: "← 返回复习组" }).onclick = () => this.showPage("home");
+      bar.createEl("strong", { text: this.page === "stats" ? "复习统计" : "内容与备份" });
+      if (this.page === "stats") {
+        container.addClass("is-statistics");
+        renderStatistics(container, this.plugin.service.records, this.plugin.service.history, this.plugin.settings, this.statistics, (resetScroll) => {
+          if (resetScroll) container.scrollTop = 0;
+          this.saveHome(); void this.render();
         });
+      } else { this.renderWarnings(container); this.renderManagement(container); this.renderDataActions(container); }
+      return;
     }
-
-    const cards = container.createDiv({ cls: "review-center-category-grid" });
-    this.renderCategory(cards, "note", "笔记复习", "file-text");
-    this.renderCategory(cards, "card", "卡片复习", "layers-3");
-
-    const session = this.plugin.service.session;
-    if (session && this.plugin.service.currentEntry()) {
-      const continueBox = container.createDiv({ cls: "review-center-continue" });
-      continueBox.createSpan({ text: `有一轮${session.mode === "note" ? "笔记" : "卡片"}复习尚未完成。` });
-      continueBox
-        .createEl("button", { cls: "mod-cta", text: "继续复习" })
-        .addEventListener("click", () => void this.plugin.continueReview());
+    container.addClass("is-tree-home");
+    const bar = container.createDiv({ cls: "review-home-toolbar" });
+    const tabs = bar.createDiv({ cls: "review-home-tabs", attr: { role: "tablist", "aria-label": "复习类型" } });
+    for (const [mode, label] of [["note", "笔记"], ["card", "卡片"]] as const) {
+      const button = tabs.createEl("button", { text: label, cls: mode === this.homeMode ? "is-active" : "", attr: { role: "tab", "aria-selected": String(mode === this.homeMode) } });
+      button.onclick = () => { this.homeMode = mode; this.homeScroll = 0; const old = container.querySelector(".review-tree-scroll"); if (old) old.scrollTop = 0; this.saveHome(); void this.render(); };
     }
-
-    if (this.plugin.settings.showNoteHeatmap) this.renderHeatmap(container, "note");
-    if (this.plugin.settings.showCardHeatmap) this.renderHeatmap(container, "card");
-    this.renderWarnings(container);
-    this.renderManagement(container);
-    this.renderDataActions(container);
+    const nodes = buildReviewTree(this.plugin.service.records, this.plugin.settings, this.homeMode), flat = flattenTree(nodes);
+    const selected = flat.find((n) => n.id === this.selected[this.homeMode]) ?? nodes[0];
+    if (selected) this.selected[this.homeMode] = selected.id;
+    const actions = bar.createDiv({ cls: "review-home-actions" });
+    actions.createEl("button", { text: "统计", attr: { "aria-label": "查看复习统计" } }).onclick = () => this.showPage("stats");
+    const start = actions.createEl("button", { cls: "mod-cta", text: "开始" });
+    const count = selected ? this.plugin.service.counts(this.homeMode, selected.groupId, selected.tagPath) : null;
+    start.disabled = !count || count.due + count.new === 0 || this.plugin.service.maintenance;
+    start.onclick = () => { if (selected) void this.plugin.startReview(this.homeMode, false, selected.groupId, selected.tagPath); };
+    const refresh = actions.createEl("button", { cls: "review-center-icon-button", attr: { "aria-label": "刷新复习内容" } });
+    setIcon(refresh, "refresh-cw"); refresh.onclick = () => { refresh.disabled = true; void this.plugin.refreshData(true); };
+    actions.createEl("button", { text: "设置", attr: { "aria-label": "打开插件设置" } }).onclick = () => this.plugin.openPluginSettings();
+    const issues = this.plugin.service.pendingChanges().length;
+    const warnings = this.plugin.service.records.reduce((n, r) => n + r.warnings.length, 0);
+    if (issues || warnings) {
+      const notice = container.createDiv({ cls: "review-home-notice" });
+      notice.createSpan({ text: issues ? `${issues} 张卡片内容有变化` : `${warnings} 项需要处理` });
+      notice.createEl("button", { text: "查看" }).onclick = () => issues ? new ChangedCardsModal(this.app, this.plugin.service, undefined, () => void this.render()).open() : this.showPage("manage");
+    }
+    const scroll = container.createDiv({ cls: "review-tree-scroll" });
+    const table = scroll.createDiv({ cls: "review-tree", attr: { role: "treegrid", "aria-label": "复习组和标签" } });
+    const head = table.createDiv({ cls: "review-tree-row review-tree-heading", attr: { role: "row" } });
+    for (const label of ["复习组", "未学习", "学习中", "待复习", ""]) head.createDiv({ text: label, attr: { role: "columnheader" } });
+    const add = (node: ReviewTreeNode, depth: number) => {
+      const counts = this.plugin.service.counts(node.mode, node.groupId, node.tagPath);
+      const open = this.expanded[node.id] ?? !node.tagPath;
+      const row = table.createDiv({ cls: `review-tree-row${node.id === selected?.id ? " is-selected" : ""}`, attr: { role: "row", "aria-level": String(depth + 1), "aria-selected": String(node.id === selected?.id), tabindex: "0", ...(node.children.length ? { "aria-expanded": String(open) } : {}) } });
+      const label = row.createDiv({ cls: "review-tree-name", attr: { role: "gridcell" } });
+      label.style.setProperty("--tree-depth", String(Math.min(depth, 5)));
+      const toggle = label.createEl("button", { cls: "review-tree-toggle", attr: { "aria-label": `${open ? "收起" : "展开"}${node.label}`, tabindex: "-1" } });
+      if (node.children.length) { setIcon(toggle, open ? "chevron-down" : "chevron-right"); toggle.onclick = (event) => { event.stopPropagation(); this.expanded[node.id] = !open; this.saveHome(); void this.render(); }; }
+      else { toggle.disabled = true; toggle.setAttribute("aria-hidden", "true"); }
+      label.createSpan({ text: node.label, attr: { title: node.tagPath ? "#" + node.tagPath : node.label } });
+      for (const [value, cls] of [[counts.new, "new"], [counts.learning, "learning"], [counts.review, "review"]] as const) row.createDiv({ cls: `review-tree-count is-${cls}${value === 0 ? " is-zero" : ""}`, text: String(value), attr: { role: "gridcell" } });
+      const cell = row.createDiv({ attr: { role: "gridcell" } });
+      const gear = cell.createEl("button", { cls: "review-tree-gear", attr: { "aria-label": `${node.label}菜单` } });
+      setIcon(gear, "settings"); gear.onclick = (event) => { event.stopPropagation(); this.nodeMenu(node, event); };
+      const select = () => { this.selected[this.homeMode] = node.id; this.saveHome(); void this.render(); };
+      row.onclick = select;
+      row.onkeydown = (event) => {
+        if (event.target !== row) return;
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); }
+        if (["ArrowRight", "ArrowLeft"].includes(event.key) && node.children.length) { event.preventDefault(); this.expanded[node.id] = event.key === "ArrowRight"; void this.render(); }
+        if (["ArrowUp", "ArrowDown"].includes(event.key)) { event.preventDefault(); const rows = Array.from(table.querySelectorAll<HTMLElement>('[role="row"][tabindex]')); rows[rows.indexOf(row) + (event.key === "ArrowDown" ? 1 : -1)]?.focus(); }
+      };
+      if (open) node.children.forEach((child) => add(child, depth + 1));
+    };
+    nodes.forEach((node) => add(node, 0));
+    if (!nodes.length || !groupsFor(this.plugin.settings, this.homeMode).some((g) => g.tags.length)) {
+      const empty = table.createDiv({ cls: "review-tree-empty" });
+      empty.createEl("p", { text: "先为复习组选择标签，内容会自动出现在这里。" });
+      empty.createEl("button", { text: "设置复习组" }).onclick = () => this.plugin.openPluginSettings();
+    }
+    const foot = container.createDiv({ cls: "review-tree-footer" });
+    foot.createSpan({ text: "数量为当前可开始的内容", attr: { title: "数量已扣除每日上限和搁置内容。多标签内容会重复显示，父级与实际复习按内容去重，父级不一定等于子级相加。" } });
+    const help = foot.createEl("button", { text: "?", attr: { "aria-label": "数量说明" } });
+    help.onclick = () => new Notice("多标签内容可在多个分支显示；父级数量和实际队列会去重。尚未到时间、已暂停、待确认或已搁置的内容不计入。", 10000);
+    scroll.scrollTop = this.homeScroll;
+    scroll.onscroll = () => { this.homeScroll = scroll.scrollTop; this.saveHome(); };
   }
 
-  private renderCategory(
-    parent: HTMLElement,
-    mode: "note" | "card",
-    label: string,
-    iconName: string,
-  ): void {
-    const groups = groupsFor(this.plugin.settings, mode);
-    if (!groups.some((group) => group.id === this.selectedGroups[mode])) delete this.selectedGroups[mode];
-    const groupId = this.selectedGroups[mode];
-    const counts = this.plugin.service.counts(mode, groupId);
-    const card = parent.createDiv({ cls: `review-center-category is-${mode}` });
-    const icon = card.createDiv({ cls: "review-center-category-icon" });
-    setIcon(icon, iconName);
-    card.createEl("h2", { text: label });
-    const select = card.createEl("select", { attr: { "aria-label": `${label}复习组` } });
-    select.createEl("option", { value: "", text: "全部组" });
-    for (const group of groups) select.createEl("option", { value: group.id, text: group.name });
-    select.value = groupId ?? "";
-    select.addEventListener("change", () => { this.selectedGroups[mode] = select.value || undefined; void this.render(); });
-    const countRow = card.createDiv({ cls: "review-center-counts" });
-    countRow.createSpan({ text: `今日到期 ${counts.due}` });
-    countRow.createSpan({ text: `新内容 ${counts.new}` });
-    const start = card.createEl("button", { cls: "mod-cta", text: "开始" });
-    start.disabled = counts.due + counts.new === 0;
-    start.addEventListener("click", () => void this.plugin.startReview(mode, false, groupId));
-    const extra = card.createEl("button", { text: "额外复习" });
-    extra.disabled = this.plugin.service.allCount(mode, groupId) === 0;
-    extra.addEventListener("click", () => void this.plugin.startReview(mode, true, groupId));
-  }
-
-  private renderHeatmap(parent: HTMLElement, mode: ReviewMode): void {
-    const days = heatmapDays(this.plugin.service.history, mode);
-    const section = parent.createEl("section", { cls: `review-heatmap is-${mode}` });
-    const title = mode === "note" ? "笔记复习热力图" : "卡片复习热力图";
-    const total = days.reduce((sum, day) => sum + day.count, 0);
-    section.createEl("h3", { text: title });
-    section.createEl("p", { cls: "review-heatmap-summary", text: `最近一年 · ${total} 次评分 · ${days.filter((day) => day.count > 0).length} 个学习日` });
-    const scroll = section.createDiv({ cls: "review-heatmap-scroll", attr: { tabindex: "0", "aria-label": `${title}，可左右滚动` } });
-    const chart = scroll.createDiv({ cls: "review-heatmap-chart" });
-    const months = chart.createDiv({ cls: "review-heatmap-months", attr: { "aria-hidden": "true" } });
-    const grid = chart.createDiv({ cls: "review-heatmap-grid" });
-    const first = new Date(`${days[0].date}T12:00:00`);
-    const offset = (first.getDay() + 6) % 7;
-    const weeks = Math.ceil((offset + days.length) / 7);
-    months.style.gridTemplateColumns = `repeat(${weeks}, 12px)`;
-    for (let index = 0; index < offset; index += 1) grid.createSpan({ cls: "review-heatmap-empty" });
-    const detail = section.createEl("p", { cls: "review-heatmap-detail", text: "点击日期查看次数 · 周一至周日从上到下", attr: { "aria-live": "polite" } });
-    days.forEach((day, index) => {
-      const date = new Date(`${day.date}T12:00:00`);
-      if (date.getDate() === 1) {
-        const month = months.createSpan({ text: `${date.getMonth() + 1}月` });
-        month.style.gridColumn = String(Math.floor((offset + index) / 7) + 1);
-      }
-      const label = `${day.date} · ${day.count} 次评分`;
-      const cell = grid.createEl("button", { cls: `review-heatmap-cell level-${day.level}`, attr: { title: label, "aria-label": label, type: "button" } });
-      cell.addEventListener("click", () => detail.setText(label));
-    });
-    const legend = section.createDiv({ cls: "review-heatmap-legend" });
-    legend.createSpan({ text: "评分次数" });
-    for (const [level, label] of ["0", "1–5", "6–10", "11–20", "21+"].entries()) {
-      legend.createSpan({ cls: `review-heatmap-swatch level-${level}`, attr: { "aria-hidden": "true" } });
-      legend.createSpan({ text: label });
-    }
-    window.requestAnimationFrame(() => { if (scroll.isConnected) scroll.scrollLeft = scroll.scrollWidth; });
+  private nodeMenu(node: ReviewTreeNode, event: MouseEvent): void {
+    const menu = new Menu();
+    menu.addItem((i) => i.setTitle("重命名").setIcon("pencil").onClick(() => this.plugin.renameReviewNode(node)));
+    menu.addItem((i) => i.setTitle("选项").setIcon("settings").onClick(() => this.plugin.openReviewOptions(node)));
+    menu.addItem((i) => i.setTitle("导出").setIcon("download").onClick(() => { void this.plugin.service.exportScope(node).then((path) => new Notice("范围备份已写入：" + path)).catch((e) => new Notice(String(e))); }));
+    menu.addSeparator();
+    menu.addItem((i) => i.setTitle("删除").setIcon("trash-2").onClick(() => this.plugin.deleteReviewNode(node)));
+    menu.showAtMouseEvent(event);
   }
 
   private async renderCardSession(container: HTMLElement, version: number): Promise<void> {
@@ -272,7 +277,7 @@ export class ReviewCenterView extends ItemView {
     setIcon(icon, "circle-check-big");
     done.createEl("h1", { text: "本轮完成" });
     const mode = this.plugin.service.session?.mode ?? "card";
-    const nextDue = this.plugin.service.nextDue(mode, this.plugin.service.session?.groupId);
+    const nextDue = this.plugin.service.nextDue(mode, this.plugin.service.session?.groupId, this.plugin.service.session?.tagPath);
     done.createEl("p", {
       text: nextDue
         ? `已完成当前限额内的内容。下次到期：${formatDue(nextDue.toISOString())}`
@@ -326,6 +331,7 @@ export class ReviewCenterView extends ItemView {
   private renderManagement(container: HTMLElement): void {
     const details = container.createEl("details", { cls: "review-center-management" });
     details.createEl("summary", { text: "管理复习内容" });
+    details.open = true;
     const controls = details.createDiv({ cls: "review-management-controls" });
     const search = controls.createEl("input", { type: "search", placeholder: "搜索标题、路径、问题或标签" });
     const filter = controls.createEl("select");
@@ -335,6 +341,7 @@ export class ReviewCenterView extends ItemView {
       ["suspended", "已暂停"],
       ["pending-change", "内容已修改"],
       ["removed", "已移除"],
+      ["leech", "记忆难点"],
     ]) {
       filter.createEl("option", { value, text: label });
     }
@@ -360,7 +367,7 @@ export class ReviewCenterView extends ItemView {
           .join("\n")
           .toLocaleLowerCase("zh-CN");
         if (normalized && !haystack.includes(normalized)) continue;
-        if (filter !== "all" && item.status !== filter) continue;
+        if (filter === "leech" ? !item.leech : filter !== "all" && item.status !== filter) continue;
         rows.push({ record, item });
       }
     }
