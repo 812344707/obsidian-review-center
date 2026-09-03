@@ -256,6 +256,7 @@ export class ReviewCenterView extends ItemView {
       button.createSpan({ cls: "review-grade-name", text: GRADE_LABELS[grade] });
       button.createSpan({ cls: "review-grade-interval", text: preview[grade].interval });
       button.addEventListener("click", () => {
+        if (this.plugin.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
         void (async () => {
           for (const sibling of Array.from(row.querySelectorAll("button"))) sibling.disabled = true;
           await this.plugin.service.gradeCurrent(grade);

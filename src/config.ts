@@ -28,6 +28,22 @@ export function parseTags(text: string): string[] {
   return tags;
 }
 
+export function parseCalloutTypes(text: string): string[] {
+  const types = [...new Set(["review", ...text.toLowerCase().split(/[\s,，]+/).filter(Boolean)])];
+  if (types.some((type) => !/^[a-z][a-z0-9_-]*$/.test(type))) {
+    throw new Error("类型用英文字母开头，可含数字、下划线和连字符，例如 review 或 study-card。");
+  }
+  return types;
+}
+
+export function validateDataFolder(value: string): string {
+  const path = value.trim().replace(/\/$/, "");
+  if (!path || /^[\\/]|^[a-z]:/i.test(path) || /[\\\u0000-\u001f]/.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("请输入知识库内的子目录，例如 学习数据/复习中心；不能使用绝对路径或 ../。");
+  }
+  return path;
+}
+
 export function parseSteps(text: string): string[] {
   const steps = text.trim().toLowerCase().split(/\s+/).filter(Boolean);
   for (const step of steps) {
@@ -119,6 +135,10 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     showNoteHeatmap: data.showNoteHeatmap !== false, showCardHeatmap: data.showCardHeatmap !== false,
     reviewHeading: typeof data.reviewHeading === "string" && data.reviewHeading.trim() ? data.reviewHeading.trim() : "复习",
     reviewHeadingLevel: number(data.reviewHeadingLevel, 2, 1, 6),
+    reviewCalloutTypes: (() => {
+      try { return parseCalloutTypes(Array.isArray(data.reviewCalloutTypes) ? data.reviewCalloutTypes.filter((t) => typeof t === "string").join(" ") : ""); }
+      catch { return ["review"]; }
+    })(),
     dataFolder: typeof data.dataFolder === "string" && data.dataFolder.replace(/^\/+|\/+$/g, "").trim() ? data.dataFolder.replace(/^\/+|\/+$/g, "").trim() : "复习中心数据",
     autoOpenDashboard: data.autoOpenDashboard === true,
   };

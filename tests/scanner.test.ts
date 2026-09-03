@@ -25,9 +25,10 @@ function harness(tags = ["note", "card"]) {
     loadAllHistory: async () => structuredClone(history), loadAllRecords: async () => structuredClone([...records.values()]),
     saveRecord: async (record: SourceRecord) => { records.set(record.reviewId, structuredClone(record)); },
     appendHistory: async (events: HistoryEvent[]) => { history.push(...structuredClone(events)); },
+    writeBackup: vi.fn(async () => "backup.json"), backupSource: vi.fn(async () => undefined),
     deleteRecord: async (id: string) => { records.delete(id); } };
   const scanner = new VaultScanner(app as unknown as App, store as unknown as ReviewStore, () => settings);
-  return { scanner, settings, app, records, history, file, files };
+  return { scanner, settings, app, store, records, history, file, files };
 }
 
 describe("tag scanner identity and scope", () => {
@@ -81,6 +82,65 @@ describe("tag scanner identity and scope", () => {
     expect(result.records.find((r) => r.sourcePath === h.file.path)?.reviewId).toBe(first.reviewId);
     expect(result.records.find((r) => r.sourcePath === copy.path)?.reviewId).not.toBe(first.reviewId);
   });
+
+  it("migrates known out-of-scope legacy notes without losing schedules or repeating conversion", async () => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    (h.file.cache!.frontmatter as { tags: string[] }).tags = [];
+    const result = await h.scanner.scan();
+    expect(h.file.content).toContain("> [!review]- 复习");
+    expect(result.records[0].sourceStatus).toBe("out-of-scope");
+    expect(result.records[0].cards).toEqual(first.cards);
+    const backups = h.store.backupSource.mock.calls.length;
+    await h.scanner.scan();
+    expect(h.store.backupSource.mock.calls).toHaveLength(backups);
+    expect(h.history.filter((event) => event.action === "delete")).toHaveLength(0);
+  });
+  it("keeps the original note and schedules on a failed migration backup, then retries", async () => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    const original = h.file.content;
+    h.store.backupSource.mockRejectedValueOnce(new Error("disk error"));
+    const failed = await h.scanner.scan();
+    expect(h.file.content).toBe(original);
+    expect(failed.records[0].cards).toEqual(first.cards);
+    expect(failed.records[0].sourceStatus).toBe("parse-error");
+    const retry = await h.scanner.scan();
+    expect(retry.records[0].sourceStatus).toBe("active");
+    expect(Object.keys(retry.records[0].cards)).toEqual(Object.keys(first.cards));
+    expect(h.history.filter((event) => event.action === "delete")).toHaveLength(0);
+  });
+  it("does not delete progress when the ID remains in an unrecognized callout", async () => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.file.content = h.file.content.replace("[!review]", "[!typo]");
+    const result = await h.scanner.scan();
+    expect(result.records[0].sourceStatus).toBe("parse-error");
+    expect(result.records[0].cards).toEqual(first.cards);
+    expect(h.history.filter((event) => event.action === "delete")).toHaveLength(0);
+  });
+  it("leaves duplicate source identities untouched during legacy migration", async () => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    const copy = structuredClone(h.file); copy.path = "资料/重复.md"; h.files.push(copy);
+    const original = h.file.content;
+    const result = await h.scanner.scan();
+    expect(h.file.content).toBe(original); expect(copy.content).toBe(original);
+    expect(copy.cache!.frontmatter).toEqual(h.file.cache!.frontmatter);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].cards).toEqual(first.cards);
+    expect(result.records[0].warnings.join()).toContain("重复的笔记标识");
+  });
+  it.each(["missing-id", "changed-content"])("preserves unmatched saved cards in legacy migration: %s", async (change) => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    h.file.content = change === "missing-id" ? h.file.content.replace(/^\^rv-.*$/gm, "") : h.file.content.replace("答:: 答案", "答:: 修改后的答案");
+    const original = h.file.content; const history = structuredClone(h.history);
+    const result = await h.scanner.scan();
+    expect(h.file.content).toBe(original);
+    expect(result.records[0].cards).toEqual(first.cards);
+    expect(result.records[0].warnings.join()).toContain("无法对应");
+    expect(h.history).toEqual(history);
+  });
   it("retains history after a real source deletion", async () => {
     const h = harness(); await h.scanner.scan(); const count = h.history.length;
     h.files.splice(0); const result = await h.scanner.scan();
@@ -90,7 +150,7 @@ describe("tag scanner identity and scope", () => {
   });
   it("blocks malformed card sections without blocking note reviews or dropping cards", async () => {
     const h = harness(); const original = (await h.scanner.scan()).records[0];
-    h.file.content += "\n## 复习\n重复标题";
+    h.file.content += "\n> [!review]-\n> 问:: 缺少答案\n";
     const result = await h.scanner.scan();
     expect(result.records[0].sourceStatus).toBe("parse-error");
     expect(result.records[0].cards).toEqual(original.cards);

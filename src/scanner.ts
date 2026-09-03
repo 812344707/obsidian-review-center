@@ -1,6 +1,6 @@
 import { App, TFile, getAllTags } from "obsidian";
 import { createHistoryEvent, reconcileRecordsWithHistory } from "./history";
-import { insertMissingBlockIds, parseReviewSection } from "./parser";
+import { convertLegacySection, insertMissingBlockIds, parseReviewCallouts } from "./parser";
 import { createSchedule } from "./scheduler";
 import { ReviewStore } from "./storage";
 import type {
@@ -53,13 +53,65 @@ export class VaultScanner {
       const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
       return resolveGroup(tags, settings.noteGroups) || resolveGroup(tags, settings.cardGroups);
     });
-    const identified = await this.identifyWatchedFiles(watchedFiles, recordById, outsideIdentityPaths);
+    const migrationWarnings = new Map<string, string[]>();
+    const blockedIdentityPaths = new Set<string>();
+    const identityPaths = new Map<string, string[]>();
+    for (const file of allMarkdown) {
+      if (pathIsInside(file.path, settings.dataFolder)) continue;
+      const id = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
+      if (id) identityPaths.set(id, [...(identityPaths.get(id) ?? []), file.path]);
+    }
+    let backedUp = false;
+    for (const file of allMarkdown) {
+      if (pathIsInside(file.path, settings.dataFolder)) continue;
+      const known = recordById.get(readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter) ?? "") ??
+        reconciled.records.find((record) => record.sourcePath === file.path);
+      const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
+      if (!known && !resolveGroup(tags, settings.cardGroups)) continue;
+      try {
+        const original = await this.app.vault.read(file);
+        const conversion = convertLegacySection(original, settings.reviewHeading, settings.reviewHeadingLevel, settings.reviewCalloutTypes);
+        if (conversion.warnings.length) { migrationWarnings.set(file.path, conversion.warnings); continue; }
+        if (!conversion.changed) continue;
+        const duplicates = known ? identityPaths.get(known.reviewId) ?? [] : [];
+        if (duplicates.length > 1) {
+          const warning = "旧章节迁移遇到重复的笔记标识，原文和进度保留，请先核对这些笔记：" + duplicates.join("、");
+          for (const path of duplicates) { blockedIdentityPaths.add(path); migrationWarnings.set(path, [warning]); }
+          continue;
+        }
+        if (known) {
+          const converted = parseReviewCallouts(conversion.markdown, settings.reviewCalloutTypes);
+          const byId = new Map(converted.cards.filter((card) => card.blockId).map((card) =>
+            [card.blockId + (card.kind === "qa" ? ":qa" : ":c" + card.clozeIndex), card]));
+          if (Object.values(known.cards).some((card) => card.status !== "removed" &&
+            (!byId.has(card.id) || ![card.acceptedHash, card.pendingHash].includes(byId.get(card.id)!.hash)))) {
+            migrationWarnings.set(file.path, ["旧章节与已有卡片的标识或内容无法对应，已保留原文和进度。请根据备份核对，或手动改为复习块后重新扫描。"]);
+            continue;
+          }
+        }
+        if (!backedUp) {
+          await this.store.writeBackup({
+            schemaVersion: 3, exportedAt: new Date().toISOString(), pluginVersion: "0.3.0",
+            settings, records: reconciled.records, history,
+          }, "pre-callout-migration");
+          backedUp = true;
+        }
+        await this.store.backupSource(file.path, original, known);
+        await this.app.vault.process(file, (current) => {
+          if (current !== original) throw new Error("迁移期间笔记发生修改，已跳过，请重新扫描。");
+          return conversion.markdown;
+        });
+      } catch (error) {
+        migrationWarnings.set(file.path, ["复习块迁移未完成，原有进度保留：" + (error instanceof Error ? error.message : String(error))]);
+      }
+    }
+    const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths);
     const activeIds = new Set<string>();
     const resultRecords: SourceRecord[] = [];
 
     for (const entry of identified) {
       const fileEvents: HistoryEvent[] = [];
-      const record = await this.scanFile(entry, recordById.get(entry.reviewId), fileEvents);
+      const record = await this.scanFile(entry, recordById.get(entry.reviewId), fileEvents, migrationWarnings.get(entry.file.path));
       activeIds.add(record.reviewId);
       resultRecords.push(record);
       await this.store.appendHistory(fileEvents);
@@ -77,7 +129,8 @@ export class VaultScanner {
         const file = allMarkdown.find((candidate) => candidate.path === outsidePath);
         const cache = file && this.app.metadataCache.getFileCache(file);
         record.tags = cache ? (getAllTags(cache) ?? []) : record.tags;
-        record.sourceStatus = "out-of-scope";
+        record.sourceStatus = blockedIdentityPaths.has(outsidePath) ? "parse-error" : "out-of-scope";
+        if (migrationWarnings.has(outsidePath)) record.warnings = migrationWarnings.get(outsidePath)!;
         record.updatedAt = new Date().toISOString();
         resultRecords.push(record);
         await this.store.saveRecord(record);
@@ -136,23 +189,36 @@ export class VaultScanner {
     entry: IdentifiedFile,
     existing: SourceRecord | undefined,
     events: HistoryEvent[],
+    migrationWarnings?: string[],
   ): Promise<SourceRecord> {
     const settings = this.getSettings();
     const now = new Date();
     const cache = this.app.metadataCache.getFileCache(entry.file);
     const tags = cache ? (getAllTags(cache) ?? []) : [];
     const cardGroup = resolveGroup(tags, settings.cardGroups);
-    let parsed: ReturnType<typeof parseReviewSection> | undefined;
-    if (cardGroup) {
+    let parsed: ReturnType<typeof parseReviewCallouts> | undefined;
+    let scannedMarkdown = "";
+    if (migrationWarnings?.length) {
+      parsed = { found: true, valid: false, cards: [], warnings: migrationWarnings };
+    } else if (cardGroup) {
       let markdown = await this.app.vault.read(entry.file);
-      parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
+      parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
       if (parsed.valid && parsed.cards.some((draft) => !draft.blockId)) {
         await this.app.vault.process(entry.file, (current) => {
-          const latest = parseReviewSection(current, settings.reviewHeading, settings.reviewHeadingLevel);
+          const latest = parseReviewCallouts(current, settings.reviewCalloutTypes);
           return latest.valid ? insertMissingBlockIds(current, latest.cards, () => createId("rv")) : current;
         });
         markdown = await this.app.vault.read(entry.file);
-        parsed = parseReviewSection(markdown, settings.reviewHeading, settings.reviewHeadingLevel);
+        parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
+      }
+      scannedMarkdown = markdown;
+    }
+    if (parsed?.valid && existing && scannedMarkdown) {
+      const recognized = new Set(parsed.cards.map((card) => card.blockId));
+      const stillPresent = new Set([...scannedMarkdown.matchAll(/^[ \t]*(?:>[ \t]*)*\^(rv-[a-z0-9-]+)[ \t]*$/gmi)].map((match) => match[1].toLowerCase()));
+      if (Object.values(existing.cards).some((card) => card.blockId && !recognized.has(card.blockId) && stillPresent.has(card.blockId))) {
+        parsed.valid = false;
+        parsed.warnings.push("原卡片标识仍在笔记中，但不在可识别的复习块内；已保留进度，请检查提示块类型和格式。");
       }
     }
     const record = existing ?? this.createRecord(entry, now, tags, events);

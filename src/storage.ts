@@ -5,7 +5,7 @@ import type {
   ReviewCenterSettings,
   SourceRecord,
 } from "./types";
-import { createId, localDayKey } from "./utils";
+import { createId, hashText, localDayKey } from "./utils";
 
 export class ReviewStore {
   private writeChains = new Map<string, Promise<void>>();
@@ -22,6 +22,24 @@ export class ReviewStore {
     await this.ensureFolder(this.recordsFolder());
     await this.ensureFolder(this.historyFolder());
     await this.ensureFolder(this.exportsFolder());
+  }
+
+  async flush(): Promise<void> {
+    await Promise.all([...this.writeChains.values()]);
+  }
+
+  async backupSource(sourcePath: string, markdown: string, record?: SourceRecord): Promise<void> {
+    const folder = normalizePath(this.baseFolder() + "/migrations/callouts");
+    await this.ensureFolder(folder);
+    let path = folder + "/" + hashText(sourcePath + "\n" + markdown) + ".json";
+    if (await this.app.vault.adapter.exists(path)) {
+      const previous = JSON.parse(await this.app.vault.adapter.read(path)) as { sourcePath?: string; markdown?: string };
+      if (previous.sourcePath === sourcePath && previous.markdown === markdown) return;
+      path = folder + "/" + createId("source-backup") + ".json";
+    }
+    const payload = JSON.stringify({ sourcePath, markdown, record, backedUpAt: new Date().toISOString() }, null, 2);
+    await this.app.vault.adapter.write(path, payload);
+    if (await this.app.vault.adapter.read(path) !== payload) throw new Error("原文备份核对失败，未转换笔记。");
   }
 
   async loadRecord(reviewId: string): Promise<SourceRecord | null> {

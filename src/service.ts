@@ -33,6 +33,23 @@ export class ReviewService {
   private undoStack: UndoEntry[] = [];
   private gradePromise: Promise<QueueEntry | null> | null = null;
   private hasLoaded = false;
+  private operationTail: Promise<unknown> = Promise.resolve();
+  maintenance = false;
+
+  private enqueue<T>(operation: () => Promise<T>, maintenance = false): Promise<T> {
+    if (this.maintenance && !maintenance) return Promise.reject(new Error("正在迁移或批量处理，请稍候。"));
+    const result = this.operationTail.catch(() => undefined).then(operation);
+    this.operationTail = result.catch(() => undefined);
+    return result;
+  }
+
+  async runMaintenance<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.maintenance) throw new Error("已有批量操作正在进行，请稍候。");
+    this.maintenance = true;
+    try { return await this.enqueue(operation, true); }
+    finally { this.maintenance = false; }
+  }
+
   restoringSession = false;
 
   constructor(
@@ -43,8 +60,9 @@ export class ReviewService {
     private readonly onSessionChanged: (session: ReviewSession | null) => void,
   ) {}
 
-  async refresh(): Promise<void> {
-    if (this.gradePromise) await this.gradePromise;
+  refresh(): Promise<void> { return this.enqueue(() => this.performRefresh()); }
+
+  private async performRefresh(): Promise<void> {
     const result = await this.scanner.scan();
     this.records = result.records;
     this.history = result.history;
@@ -146,7 +164,7 @@ export class ReviewService {
 
   gradeCurrent(rating: Grade): Promise<QueueEntry | null> {
     if (this.gradePromise) return this.gradePromise;
-    this.gradePromise = this.performGrade(rating).finally(() => { this.gradePromise = null; });
+    this.gradePromise = this.enqueue(() => this.performGrade(rating)).finally(() => { this.gradePromise = null; });
     return this.gradePromise;
   }
 
@@ -175,7 +193,9 @@ export class ReviewService {
     return this.undoStack.length > 0;
   }
 
-  async undoLast(): Promise<QueueEntry | null> {
+  undoLast(): Promise<QueueEntry | null> { return this.enqueue(() => this.performUndo()); }
+
+  private async performUndo(): Promise<QueueEntry | null> {
     const undo = this.undoStack.pop();
     if (!undo || !this.session) return this.currentEntry();
     const record = this.recordById(undo.sourceId);
@@ -218,7 +238,11 @@ export class ReviewService {
     return result;
   }
 
-  async resolveChanges(
+  resolveChanges(choices: Array<{ sourceId: string; itemId: string; reset: boolean }>): Promise<void> {
+    return this.enqueue(() => this.performResolveChanges(choices));
+  }
+
+  private async performResolveChanges(
     choices: Array<{ sourceId: string; itemId: string; reset: boolean }>,
   ): Promise<void> {
     for (const choice of choices) {
@@ -246,7 +270,11 @@ export class ReviewService {
     }
   }
 
-  async setItemStatus(
+  setItemStatus(sourceId: string, itemId: string, action: "suspend" | "resume" | "remove" | "reset"): Promise<void> {
+    return this.enqueue(() => this.performSetItemStatus(sourceId, itemId, action));
+  }
+
+  private async performSetItemStatus(
     sourceId: string,
     itemId: string,
     action: "suspend" | "resume" | "remove" | "reset",
@@ -269,9 +297,11 @@ export class ReviewService {
     await this.persistMutation(record, this.makeEvent(sourceId, itemId, action, baseRevision, updated));
   }
 
-  async createBackup(prefix = "backup"): Promise<string> {
+  createBackup(prefix = "backup"): Promise<string> { return this.enqueue(() => this.performCreateBackup(prefix)); }
+
+  private async performCreateBackup(prefix: string): Promise<string> {
     const backup: FullBackup = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       pluginVersion: this.pluginVersion,
       settings: cloneValue(this.getSettings()),
@@ -281,7 +311,9 @@ export class ReviewService {
     return this.store.writeBackup(backup, prefix);
   }
 
-  async exportHistoryCsv(): Promise<string> {
+  exportHistoryCsv(): Promise<string> { return this.enqueue(() => this.performExportHistoryCsv()); }
+
+  private async performExportHistoryCsv(): Promise<string> {
     const recordMap = new Map(this.records.map((record) => [record.reviewId, record]));
     const rows = [
       [
@@ -317,10 +349,12 @@ export class ReviewService {
     return this.store.writeCsv(rows.map((row) => row.map(csvCell).join(",")).join("\n"));
   }
 
-  async restoreBackup(path: string): Promise<ReviewCenterSettings> {
+  restoreBackup(path: string): Promise<ReviewCenterSettings> { return this.enqueue(() => this.performRestoreBackup(path)); }
+
+  private async performRestoreBackup(path: string): Promise<ReviewCenterSettings> {
     const backup = await this.store.readBackup(path);
     validateBackup(backup);
-    await this.createBackup("pre-restore");
+    await this.performCreateBackup("pre-restore");
     const importedIds = new Set(backup.records.map((record) => record.reviewId));
     for (const record of this.records) {
       if (!importedIds.has(record.reviewId)) await this.store.deleteRecord(record.reviewId);
@@ -445,7 +479,7 @@ function csvCell(value: string): string {
 
 function validateBackup(value: FullBackup): void {
   if (
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== 3) ||
     !Array.isArray(value.records) ||
     !Array.isArray(value.history) ||
     !value.settings

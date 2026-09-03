@@ -109,12 +109,13 @@ export interface ReviewCenterSettings {
   showCardHeatmap: boolean;
   reviewHeading: string;
   reviewHeadingLevel: number;
+  reviewCalloutTypes: string[];
   dataFolder: string;
   autoOpenDashboard: boolean;
 }
 
 export interface StoredPluginData {
-  schemaVersion: 2;
+  schemaVersion: 3;
   settings: ReviewCenterSettings;
 }
 
@@ -125,6 +126,7 @@ export interface ParsedCardDraft {
   hash: string;
   content: ReviewContent;
   insertIdAfterLine: number;
+  insertIdPrefix?: string;
 }
 
 export interface ReviewSectionParseResult {
@@ -176,7 +178,7 @@ export interface UndoEntry {
 }
 
 export interface FullBackup {
-  schemaVersion: 1 | 2;
+  schemaVersion: 1 | 2 | 3;
   exportedAt: string;
   pluginVersion: string;
   settings: ReviewCenterSettings;

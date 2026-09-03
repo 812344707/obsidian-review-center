@@ -21,7 +21,11 @@ import type {
   StoredPluginData,
 } from "./types";
 import { createId, pathIsInside } from "./utils";
-import { normalizeSettings } from "./config";
+import { normalizeSettings, validateDataFolder } from "./config";
+import { calloutRanges } from "./parser";
+import { copyDataDirectory } from "./data-migration";
+import { BulkTagsModal } from "./bulk-tags-modal";
+import { applyBulkTags, type BulkTagPreview, type BulkTagRequest, type BulkTagResult } from "./tags";
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 
 export default class ReviewCenterPlugin extends Plugin {
@@ -38,6 +42,7 @@ export default class ReviewCenterPlugin extends Plugin {
   private legacySettings: ReviewCenterSettings | null = null;
   private migrationPromise: Promise<void> | null = null;
   private tickBusy = false;
+  private schemaUpgrade = false;
   private tickSignature = "";
 
   async onload(): Promise<void> {
@@ -77,15 +82,56 @@ export default class ReviewCenterPlugin extends Plugin {
 
   async updateSettings(next: ReviewCenterSettings): Promise<void> {
     await this.ensureMigrated();
-    this.settings = normalizeSettings(next);
-    const stored: StoredPluginData = { schemaVersion: 2, settings: this.settings };
-    await this.saveData(stored);
+    if (next.dataFolder !== this.settings.dataFolder) throw new Error("请使用“应用并迁移”更换数据目录。");
+    const normalized = normalizeSettings(next);
+    await this.service.runMaintenance(async () => {
+      const removed = this.settings.reviewCalloutTypes.filter((type) => !normalized.reviewCalloutTypes.includes(type));
+      if (removed.length) {
+        const used: string[] = [];
+        for (const file of this.app.vault.getMarkdownFiles()) {
+          if (pathIsInside(file.path, this.settings.dataFolder)) continue;
+          if (calloutRanges(await this.app.vault.read(file)).some((range) => removed.includes(range.type))) used.push(file.path);
+        }
+        if (used.length) throw new Error("这些类型仍被 " + used.length + " 篇笔记使用，暂不能移除：" + used.slice(0, 3).join("、"));
+      }
+      await this.saveData({ schemaVersion: 3, settings: normalized } satisfies StoredPluginData);
+      this.settings = normalized;
+    });
     await this.renderOpenViews();
     this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
     this.scheduleRefresh();
   }
 
+  async migrateDataFolder(value: string): Promise<void> {
+    const target = validateDataFolder(value);
+    if (target === this.settings.dataFolder) return;
+    await this.refreshData();
+    await this.service.runMaintenance(async () => {
+      await this.store.flush();
+      await this.store.writeBackup({
+        schemaVersion: 3, exportedAt: new Date().toISOString(), pluginVersion: this.manifest.version,
+        settings: this.settings, records: this.service.records, history: this.service.history,
+      }, "pre-directory-migration");
+      const migration = await copyDataDirectory(this.app.vault.adapter, this.settings.dataFolder, target);
+      const next = { ...this.settings, dataFolder: migration.target };
+      // Save before switching the store's live path. Failure leaves the old path active.
+      await this.saveData({ schemaVersion: 3, settings: next } satisfies StoredPluginData);
+      this.settings = next;
+      try { await migration.complete(); } catch (error) { console.warn("[复习中心] 目录已切换，完成标记待重试", error); }
+    });
+    await this.refreshData();
+    new Notice("复习数据已迁移并核对，旧目录保留为备份");
+  }
+
+  async runBulkTags(request: BulkTagRequest, preview: BulkTagPreview[]): Promise<BulkTagResult[]> {
+    const result = await this.service.runMaintenance(() => applyBulkTags(this.app, this.settings, request, preview));
+    // Metadata updates can arrive after vault.process; the event handler also refreshes.
+    await this.refreshData();
+    return result;
+  }
+
   async refreshData(showNotice = false): Promise<void> {
+    if (this.service?.maintenance) return;
     if (this.refreshPromise) return this.refreshPromise;
     this.refreshPromise = this.ensureMigrated()
       .then(() => this.service.refresh())
@@ -134,6 +180,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async startReview(mode: ReviewMode, extra = false, groupId?: string): Promise<void> {
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     await this.refreshData();
     const entry = this.service.startSession(mode, extra, groupId);
     if (!entry) {
@@ -147,6 +194,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async continueReview(): Promise<void> {
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     await this.refreshData();
     this.service.requeueDue();
     const session = this.service.session;
@@ -201,11 +249,13 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async undoActiveNote(): Promise<void> {
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     await this.service.undoLast();
     await this.openActiveNote();
   }
 
   async gradeActiveNote(rating: Grade): Promise<void> {
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     if (this.overlayMode !== "note") return;
     this.overlay.detach();
     await this.service.gradeCurrent(rating);
@@ -280,6 +330,10 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private registerCommands(): void {
+    this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
+    this.addCommand({ id: "insert-review-callout", name: "插入复习折叠块", editorCallback: (editor) => {
+      editor.replaceSelection("\n> [!review]- 复习\n> 问:: 这里写问题\n> 答:: 这里写答案。\n");
+    } });
     this.addCommand({
       id: "open-dashboard",
       name: "打开面板",
@@ -507,6 +561,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private scheduleRefresh(): void {
+    if (this.service?.maintenance) return;
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
@@ -523,11 +578,18 @@ export default class ReviewCenterPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const stored = await this.loadData() as { schemaVersion?: number; settings?: ReviewCenterSettings } | null;
     this.settings = normalizeSettings(stored?.settings);
-    if (stored?.settings && stored.schemaVersion !== 2) this.legacySettings = stored.settings;
+    this.schemaUpgrade = stored?.schemaVersion !== 3;
+    if (stored?.settings && stored.schemaVersion !== 2 && stored.schemaVersion !== 3) this.legacySettings = stored.settings;
   }
 
   private async ensureMigrated(): Promise<void> {
-    if (!this.legacySettings) return;
+    if (!this.legacySettings) {
+      if (this.schemaUpgrade) {
+        await this.saveData({ schemaVersion: 3, settings: this.settings } satisfies StoredPluginData);
+        this.schemaUpgrade = false;
+      }
+      return;
+    }
     if (this.migrationPromise) return this.migrationPromise;
     this.migrationPromise = (async () => {
       await this.store.initialize();
@@ -535,8 +597,9 @@ export default class ReviewCenterPlugin extends Plugin {
         schemaVersion: 1, exportedAt: new Date().toISOString(), pluginVersion: "0.1.0",
         settings: this.legacySettings!, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory(),
       }, "pre-tags-migration");
-      await this.saveData({ schemaVersion: 2, settings: this.settings } satisfies StoredPluginData);
+      await this.saveData({ schemaVersion: 3, settings: this.settings } satisfies StoredPluginData);
       this.legacySettings = null;
+      this.schemaUpgrade = false;
       this.service.finishSession();
       new Notice("旧版复习数据已备份。请配置笔记和卡片标签集，原有进度会继续保留。");
     })().finally(() => { this.migrationPromise = null; });
@@ -544,7 +607,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async tickReview(): Promise<void> {
-    if (this.tickBusy || this.refreshPromise || !this.service) return;
+    if (this.tickBusy || this.refreshPromise || !this.service || this.service.maintenance) return;
     this.tickBusy = true;
     try {
       const waiting = this.service.session && !this.service.currentEntry();

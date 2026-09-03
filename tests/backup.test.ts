@@ -7,7 +7,7 @@ import type { ReviewStore } from "../src/storage";
 import { fixtureRecord, fixtureSettings, reviewEvent, today } from "./fixtures";
 
 describe("backup compatibility", () => {
-  it.each([1, 2])("restores v%s with a backup first and preserves identities and history", async (version) => {
+  it.each([1, 2, 3])("restores v%s with a backup first and preserves identities and history", async (version) => {
     const settings = fixtureSettings();
     const record = fixtureRecord(); const event = reviewEvent("event");
     const importedSettings = version === 1 ? { watchedFolders: ["资料"], noteNewLimit: 4, cardRetention: 0.93 } : settings;
@@ -19,7 +19,7 @@ describe("backup compatibility", () => {
     const restored = await service.restoreBackup("test.json");
     expect(order).toEqual(["backup", "record", "history"]);
     expect(service.records).toEqual([record]); expect(service.history).toEqual([event]);
-    expect(store.writeBackup.mock.calls[0][0].schemaVersion).toBe(2);
+    expect(store.writeBackup.mock.calls[0][0].schemaVersion).toBe(3);
     expect(restored.dataFolder).toBe(settings.dataFolder);
     if (version === 1) {
       expect(restored.noteGroups[0].tags).toEqual([]);

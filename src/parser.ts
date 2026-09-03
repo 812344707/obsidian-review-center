@@ -26,12 +26,13 @@ export function parseReviewSection(
   const headingRegex = new RegExp(
     `^#{${headingLevel}}\\s+${escapeRegExp(headingText.trim())}\\s*$`,
   );
+  const visibleLines = maskComments(markdown).replace(/\r\n/g, "\n").split("\n");
   const matches: number[] = [];
   let fence: string | null = null;
 
   for (let index = 0; index < lines.length; index += 1) {
     fence = updateFence(lines[index], fence);
-    if (fence === null && headingRegex.test(lines[index])) matches.push(index);
+    if (fence === null && headingRegex.test(visibleLines[index])) matches.push(index);
   }
 
   if (matches.length === 0) {
@@ -91,7 +92,7 @@ function parseQuestionAnswerCards(
 
   while (index < end) {
     fence = updateFence(lines[index], fence);
-    if (fence !== null || !QUESTION_PATTERN.test(lines[index])) {
+    if (fence !== null || isIndentedCode(lines[index]) || consumedLines.has(index) || !QUESTION_PATTERN.test(lines[index])) {
       index += 1;
       continue;
     }
@@ -103,7 +104,7 @@ function parseQuestionAnswerCards(
     let localFence: string | null = null;
     for (; cursor < end; cursor += 1) {
       localFence = updateFence(lines[cursor], localFence);
-      if (localFence !== null) continue;
+      if (localFence !== null || isIndentedCode(lines[cursor])) continue;
       if (HEADING_PATTERN.test(lines[cursor]) || QUESTION_PATTERN.test(lines[cursor])) break;
       if (ANSWER_PATTERN.test(lines[cursor])) {
         answerLine = cursor;
@@ -122,7 +123,7 @@ function parseQuestionAnswerCards(
     while (blockEnd < end) {
       localFence = updateFence(lines[blockEnd], localFence);
       if (
-        localFence === null &&
+        localFence === null && !isIndentedCode(lines[blockEnd]) &&
         (QUESTION_PATTERN.test(lines[blockEnd]) || HEADING_PATTERN.test(lines[blockEnd]))
       ) {
         break;
@@ -174,7 +175,7 @@ function parseClozeCards(
     const idInfo = extractTrailingBlockId(lines, range.start, range.end);
     const contentEnd = idInfo ? trimTrailingBlankLines(lines, range.start, idInfo.line) : range.end;
     const raw = lines.slice(range.start, contentEnd).join("\n").trim();
-    const searchable = removeFencedCode(raw);
+    const searchable = maskCode(raw);
     const clozes = [...searchable.matchAll(CLOZE_PATTERN)];
     if (clozes.length === 0) continue;
 
@@ -204,15 +205,30 @@ function parseClozeCards(
   }
 }
 
-function removeFencedCode(markdown: string): string {
+function isIndentedCode(line: string): boolean { return /^(?: {4}|\t)/.test(line); }
+
+/** Preserve offsets so examples can also remain literal when rendering a card. */
+function maskCode(markdown: string): string {
   const result: string[] = [];
   let fence: string | null = null;
   for (const line of markdown.split("\n")) {
     const before = fence;
     fence = updateFence(line, fence);
-    if (before === null && fence === null) result.push(line);
+    result.push(before === null && fence === null && !isIndentedCode(line) ? line : " ".repeat(line.length));
   }
-  return result.join("\n");
+  const masked = result.join("\n");
+  const runs = [...masked.matchAll(/`+/g)];
+  let cursor = 0;
+  let output = "";
+  for (let index = 0; index < runs.length; index += 1) {
+    const opening = runs[index];
+    const closing = runs.findIndex((run, next) => next > index && run[0].length === opening[0].length);
+    if (closing < 0) continue;
+    const end = runs[closing].index! + runs[closing][0].length;
+    output += masked.slice(cursor, opening.index) + masked.slice(opening.index, end).replace(/[^\n]/g, " ");
+    cursor = end; index = closing;
+  }
+  return output + masked.slice(cursor);
 }
 
 function collectParagraphs(
@@ -225,7 +241,7 @@ function collectParagraphs(
   let index = start;
   let fence: string | null = null;
   while (index < end) {
-    if (consumedLines.has(index) || lines[index].trim() === "" || HEADING_PATTERN.test(lines[index])) {
+    if (consumedLines.has(index) || isIndentedCode(lines[index]) || lines[index].trim() === "" || HEADING_PATTERN.test(lines[index])) {
       index += 1;
       continue;
     }
@@ -265,9 +281,9 @@ function trimTrailingBlankLines(lines: string[], minimumLine: number, endExclusi
 function updateFence(line: string, current: string | null): string | null {
   const match = line.match(/^\s*(```+|~~~+)/);
   if (!match) return current;
-  const marker = match[1][0];
+  const marker = match[1];
   if (current === null) return marker;
-  return current === marker ? null : current;
+  return current[0] === marker[0] && marker.length >= current.length && line.slice((match.index ?? 0) + match[0].length).trim() === "" ? null : current;
 }
 
 export function insertMissingBlockIds(
@@ -288,16 +304,123 @@ export function insertMissingBlockIds(
   const insertions = [...missingGroups.keys()].sort((a, b) => b - a);
   for (const line of insertions) {
     const id = makeId();
-    lines.splice(line + 1, 0, `^${id}`);
+    lines.splice(line + 1, 0, `${missingGroups.get(line)?.[0].insertIdPrefix ?? ""}^${id}`);
   }
   return lines.join("\n");
 }
 
 export function renderCloze(raw: string, targetIndex: number, answerSide: boolean): string {
-  return raw.replace(CLOZE_PATTERN, (_full, indexText: string, answer: string, hint?: string) => {
+  const searchable = maskCode(raw);
+  return raw.replace(CLOZE_PATTERN, (full, indexText: string, answer: string, hint: string | undefined, offset: number) => {
+    if (searchable.slice(offset, offset + full.length) !== full) return full;
     const index = Number(indexText);
     if (answerSide) return index === targetIndex ? `==${answer}==` : answer;
     if (index === targetIndex) return hint ? `[${hint}]` : "[…]";
     return answer;
   });
+}
+
+export interface CalloutRange {
+  type: string;
+  start: number;
+  end: number;
+}
+
+function maskComments(markdown: string): string {
+  return markdown.replace(/<!--[\s\S]*?(?:-->|$)|%%[\s\S]*?(?:%%|$)/g, (text) => text.replace(/[^\n]/g, " "));
+}
+
+/** Physical line numbers are retained; only the owning quote prefix is stripped. */
+export function calloutRanges(markdown: string): CalloutRange[] {
+  const lines = maskComments(markdown.replace(/\r\n/g, "\n")).split("\n");
+  const ranges: CalloutRange[] = [];
+  let fence: string | null = null;
+  let frontmatter = lines[0]?.trim() === "---";
+  for (let index = frontmatter ? 1 : 0; index < lines.length; index += 1) {
+    if (frontmatter) { if (lines[index].trim() === "---") frontmatter = false; continue; }
+    fence = updateFence(lines[index], fence);
+    if (fence !== null) continue;
+    if (!/^ {0,3}>/.test(lines[index])) continue;
+    const match = lines[index].match(/^ {0,3}> ?\[!([a-z0-9_-]+)\](?:[+-])?(?:\s.*)?$/i);
+    let end = index + 1;
+    while (end < lines.length && /^ {0,3}>/.test(lines[end])) end += 1;
+    if (match) ranges.push({ type: match[1].toLowerCase(), start: index, end });
+    index = end - 1;
+  }
+  return ranges;
+}
+
+export function parseReviewCallouts(markdown: string, types: string[] = ["review"]): ReviewSectionParseResult {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalized = new Set(types.map((type) => type.toLowerCase()));
+  const ranges = calloutRanges(markdown).filter((range) => normalized.has(range.type));
+  const cards: ParsedCardDraft[] = [];
+  const warnings: string[] = [];
+  for (const range of ranges) {
+    const virtual = [...lines];
+    const nested = new Set<number>();
+    let fence: string | null = null;
+    for (let index = range.start + 1; index < range.end; index += 1) {
+      virtual[index] = virtual[index].replace(/^ {0,3}> ?/, "");
+      if (/^\s*>/.test(virtual[index])) nested.add(index);
+      fence = updateFence(virtual[index], fence);
+    }
+    if (fence !== null) warnings.push("第 " + (range.start + 1) + " 行的复习块中有未关闭的代码块。");
+    const masked = maskComments(virtual.join("\n")).split("\n");
+    const before = cards.length;
+    parseQuestionAnswerCards(masked, range.start + 1, range.end, cards, warnings, nested);
+    parseClozeCards(masked, range.start + 1, range.end, cards, warnings, nested);
+    for (const card of cards.slice(before)) card.insertIdPrefix = lines[card.insertIdAfterLine].match(/^ {0,3}> ?/)?.[0] ?? "> ";
+  }
+  const ids = new Set<string>();
+  const owners = new Map<string, number>();
+  for (const card of cards) {
+    if (!card.blockId) continue;
+    const owner = owners.get(card.blockId);
+    if (owner !== undefined && owner !== card.content.sourceStartLine) warnings.push("多个卡片块使用同一标识：" + card.blockId);
+    owners.set(card.blockId, card.content.sourceStartLine);
+    const key = card.blockId + ":" + (card.kind === "qa" ? "qa" : card.clozeIndex);
+    if (ids.has(key)) warnings.push("卡片 ID 重复：" + key + "；请保留原进度并修复标识。");
+    ids.add(key);
+  }
+  return { found: ranges.length > 0, valid: warnings.length === 0, cards, warnings };
+}
+
+export interface LegacyConversion {
+  changed: boolean;
+  markdown: string;
+  warnings: string[];
+}
+
+/** A legacy heading is migration input only, never the active card format. */
+export function convertLegacySection(markdown: string, heading: string, level: number, types = ["review"]): LegacyConversion {
+  const legacy = parseReviewSection(markdown, heading, level);
+  if (!legacy.found) return { changed: false, markdown, warnings: [] };
+  const warnings = legacy.warnings.filter((warning) => !warning.includes("建议把复习章节放在笔记末尾"));
+  if (!legacy.valid || warnings.length) return { changed: false, markdown, warnings };
+  const current = parseReviewCallouts(markdown, types);
+  if (!current.valid) return { changed: false, markdown, warnings: current.warnings };
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const start = legacy.sectionStartLine!;
+  let end = legacy.sectionEndLine!;
+  while (end > start + 1 && lines[end - 1].trim() === "") end -= 1;
+  // Existing callouts inside an old section would become nested and cease to be
+  // independent containers. Leave ambiguous documents untouched for repair.
+  if (calloutRanges(markdown).some((range) => range.start > start && range.start < end)) {
+    return { changed: false, markdown, warnings: ["旧复习章节中已有提示块，请先将提示块移到章节外，再重试迁移。"] };
+  }
+  const replacement = ["> [!review]- " + heading, ...lines.slice(start + 1, end).map((line) => "> " + line)];
+  // Separate the block from any neighbouring blockquote.
+  if (start > 0 && lines[start - 1].trim()) replacement.unshift("");
+  if (end < lines.length && lines[end].trim()) replacement.push("");
+  lines.splice(start, end - start, ...replacement);
+  let converted = lines.join("\n");
+  if (markdown.includes("\r\n")) converted = converted.replace(/\n/g, "\r\n");
+  const next = parseReviewCallouts(converted, types);
+  const signature = (drafts: ParsedCardDraft[]) => drafts.map((card) =>
+    [card.kind, card.clozeIndex ?? null, card.blockId ?? null, card.hash]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  if (!next.valid || JSON.stringify(signature(next.cards)) !== JSON.stringify(signature([...legacy.cards, ...current.cards]))) {
+    return { changed: false, markdown, warnings: [...next.warnings, "转换前后卡片内容或标识不一致，已保留原笔记和进度。"] };
+  }
+  return { changed: true, markdown: converted, warnings: [] };
 }
