@@ -14,6 +14,8 @@ import { groupsFor, resolveGroup } from "./config";
 import { buildReviewTree, flattenTree, type ReviewTreeNode } from "./tree";
 import { defaultStatisticsState, renderStatistics } from "./statistics-view";
 import type { QueueEntry, ReviewItem, ReviewMode, SourceRecord } from "./types";
+import { groupFilter } from "./recognition";
+import { issueAdvice } from "./review-issues";
 
 export const REVIEW_CENTER_VIEW = "review-center-view";
 
@@ -74,8 +76,8 @@ export class ReviewCenterView extends ItemView {
     if (status) {
       const active = progress.state !== "idle" && !(progress.state === "done" && this.plugin.materialsDirty);
       const label = status.querySelector<HTMLElement>(".review-materials-label")!;
-      label.textContent = active ? progress.message : this.plugin.materialsDirty ? "材料有变化，可点击整理材料更新清单" :
-        this.plugin.service.records.length ? "平时直接开始，新增或修改材料后可在这里整理" : "首次使用，请点击整理材料建立复习清单";
+      label.textContent = active ? progress.message : this.plugin.materialsDirty ? "材料有变化，可点击整理数据更新清单" :
+        this.plugin.service.records.length ? "平时直接开始，新增或修改材料后可在这里整理" : "首次使用，请点击整理数据建立复习清单";
       const percentage = status.querySelector<HTMLElement>(".review-materials-percent")!;
       percentage.textContent = active ? `${progress.percent}%` : "";
       const bar = status.querySelector<HTMLProgressElement>("progress")!;
@@ -164,27 +166,27 @@ export class ReviewCenterView extends ItemView {
     const selected = flat.find((n) => n.id === this.selected[this.homeMode]) ?? nodes[0];
     if (selected) this.selected[this.homeMode] = selected.id;
     const actions = bar.createDiv({ cls: "review-home-actions" });
-    actions.createEl("button", { text: "统计", attr: { "aria-label": "查看复习统计" } }).onclick = () => this.showPage("stats");
+    const organize = actions.createEl("button", { text: "整理数据", attr: { "data-organize-materials": "", "aria-label": "整理数据并更新复习队列" } });
+    organize.onclick = () => void this.plugin.refreshData(true);
     const start = actions.createEl("button", { cls: "mod-cta", text: "开始" });
     const count = selected ? this.plugin.service.counts(this.homeMode, selected.groupId, selected.tagPath) : null;
     start.dataset.reviewStart = count && count.due + count.new > 0 ? "ready" : "empty";
     this.updateStartState();
     start.onclick = () => { if (selected) void this.plugin.startReview(this.homeMode, false, selected.groupId, selected.tagPath); };
-    const organize = actions.createEl("button", { text: "整理材料", attr: { "data-organize-materials": "", "aria-label": "整理材料并更新复习队列" } });
-    organize.onclick = () => void this.plugin.refreshData(true);
+    actions.createEl("button", { text: "统计", attr: { "aria-label": "查看复习统计" } }).onclick = () => this.showPage("stats");
     actions.createEl("button", { text: "设置", attr: { "aria-label": "打开插件设置" } }).onclick = () => this.plugin.openPluginSettings();
     const materialStatus = container.createDiv({ cls: "review-materials-status", attr: { role: "status", "aria-live": "polite" } });
     const materialLabel = materialStatus.createDiv({ cls: "review-materials-heading" });
     materialLabel.createSpan({ cls: "review-materials-label" });
     materialLabel.createSpan({ cls: "review-materials-percent" });
-    materialStatus.createEl("progress", { attr: { max: "100", value: "0", "aria-label": "材料整理进度" } });
+    materialStatus.createEl("progress", { attr: { max: "100", value: "0", "aria-label": "数据整理进度" } });
     this.updatePreparationState();
     const issues = this.plugin.service.pendingChanges().length;
     const warnings = this.plugin.service.records.reduce((n, r) => n + r.warnings.length, 0);
     if (issues || warnings) {
       const notice = container.createDiv({ cls: "review-home-notice" });
-      notice.createSpan({ text: issues ? `${issues} 张卡片内容有变化` : `${warnings} 项需要处理` });
-      notice.createEl("button", { text: "查看" }).onclick = () => issues ? new ChangedCardsModal(this.app, this.plugin.service, undefined, () => void this.render()).open() : this.showPage("manage");
+      notice.createSpan({ text: [issues ? `${issues} 张卡片内容有变化` : "", warnings ? `${warnings} 项需要处理` : ""].filter(Boolean).join("，") });
+      notice.createEl("button", { text: "处理问题" }).onclick = () => this.showPage("manage");
     }
     const scroll = container.createDiv({ cls: "review-tree-scroll" });
     const table = scroll.createDiv({ cls: "review-tree", attr: { role: "treegrid", "aria-label": "复习组和标签" } });
@@ -215,9 +217,9 @@ export class ReviewCenterView extends ItemView {
       if (open) node.children.forEach((child) => add(child, depth + 1));
     };
     nodes.forEach((node) => add(node, 0));
-    if (!nodes.length || !groupsFor(this.plugin.settings, this.homeMode).some((g) => g.tags.length)) {
+    if (!nodes.length || !groupsFor(this.plugin.settings, this.homeMode).some((g) => groupFilter(g).rules.length)) {
       const empty = table.createDiv({ cls: "review-tree-empty" });
-      empty.createEl("p", { text: "先为复习组选择标签，再点击整理材料。" });
+      empty.createEl("p", { text: "先设置笔记或卡片的识别范围，再点击整理数据。" });
       empty.createEl("button", { text: "设置复习组" }).onclick = () => this.plugin.openPluginSettings();
     }
     const foot = container.createDiv({ cls: "review-tree-footer" });
@@ -371,14 +373,33 @@ export class ReviewCenterView extends ItemView {
   }
 
   private renderWarnings(container: HTMLElement): void {
-    const warnings = this.plugin.service.records.flatMap((record) =>
-      record.warnings.map((warning) => `${record.sourceTitle}：${warning}`),
-    );
-    if (warnings.length === 0) return;
+    const pending = this.plugin.service.pendingChanges();
+    const warnings = this.plugin.service.records.flatMap((record) => record.warnings.map((warning) => ({ record, warning })));
+    if (!warnings.length && !pending.length) return;
     const details = container.createEl("details", { cls: "review-center-warnings" });
-    details.createEl("summary", { text: `需要处理 ${warnings.length}` });
-    const list = details.createEl("ul");
-    for (const warning of warnings.slice(0, 100)) list.createEl("li", { text: warning });
+    details.open = true;
+    details.createEl("summary", { text: `需要处理 ${warnings.length + pending.length}` });
+    if (pending.length) {
+      const card = details.createDiv({ cls: "review-issue-card" });
+      card.createEl("strong", { text: `${pending.length} 张卡片内容有变化` });
+      card.createEl("p", { text: "先核对最新内容。校订文字通常保留进度；希望重新学习时选择重置。" });
+      card.createEl("button", { text: "核对并处理卡片" }).onclick = () => new ChangedCardsModal(this.app, this.plugin.service, undefined, () => void this.render()).open();
+    }
+    const list = details.createDiv();
+    let shown = 0;
+    const more = details.createEl("button", { text: "显示更多问题" });
+    const append = () => {
+      for (const { record, warning } of warnings.slice(shown, shown + 50)) {
+        const advice = issueAdvice(warning), card = list.createDiv({ cls: "review-issue-card" });
+        card.createEl("strong", { text: `${record.sourceTitle} · ${advice.title}` });
+        card.createEl("p", { text: warning });
+        card.createEl("p", { cls: "review-issue-solution", text: advice.solution });
+        card.createEl("button", { text: advice.line === undefined ? "打开原文" : `查看第 ${advice.line + 1} 行` }).onclick = () => void this.plugin.openIssueSource(record, advice.line);
+      }
+      shown += 50; more.hidden = shown >= warnings.length;
+    };
+    more.onclick = append; append();
+    details.createEl("button", { text: "重新检查材料" }).onclick = () => void this.plugin.refreshData(true);
   }
 
   private renderManagement(container: HTMLElement): void {
@@ -431,7 +452,7 @@ export class ReviewCenterView extends ItemView {
     for (const { record, item } of rows.slice(0, 200)) {
       const row = parent.createDiv({ cls: "review-management-row" });
       const main = row.createDiv({ cls: "review-management-main" });
-      const group = resolveGroup(record.tags, groupsFor(this.plugin.settings, item.kind === "note" ? "note" : "card"));
+      const group = resolveGroup(record.tags, groupsFor(this.plugin.settings, item.kind === "note" ? "note" : "card"), record.sourcePath);
       const scope = record.sourceStatus !== "out-of-scope" && group ? group.name : "范围外，进度保留";
       main.createEl("strong", {
         text: item.kind === "note" ? record.sourceTitle : item.content.question.slice(0, 100) || "挖空卡",

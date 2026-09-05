@@ -76,6 +76,10 @@ export async function previewTagOperation(app: App, settings: ReviewCenterSettin
 export function rewriteTagReferences(settings: ReviewCenterSettings, operation: TagOperation, keepOld: boolean): ReviewCenterSettings {
   const next = cloneValue(settings), op = validateTagOperation(operation);
   for (const group of [...next.noteGroups, ...next.cardGroups]) {
+    // A completed rename updates explicit conditions without changing their boolean meaning.
+    if (!keepOld && op.to && group.recognition) for (const rule of group.recognition.rules) {
+      if (rule.field === "tag" && tagMatches(rule.value, op.from)) rule.value = replacement(rule.value, op)!;
+    }
     group.tags = normalizeTags(group.tags.flatMap((tag) => {
       if (tagMatches(tag, op.from)) { const updated = replacement(tag, op); return [...(keepOld ? [tag] : []), ...(updated ? [updated] : [])]; }
       if (op.to && tagMatches(op.from, tag) && !tagMatches(op.to, tag)) return [tag, op.to];

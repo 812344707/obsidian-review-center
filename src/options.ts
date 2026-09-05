@@ -1,9 +1,9 @@
 import { Modal, Notice, Platform, Setting } from "obsidian";
 import { checkParameters, clipParameters, default_w } from "ts-fsrs";
 import type ReviewCenterPlugin from "./main";
-import { defaultParameters, groupsFor, nodeParameters, parseSteps, parseTags } from "./config";
+import { defaultParameters, groupsFor, nodeParameters, parseSteps } from "./config";
 import { buildReviewTree, flattenTree, scopeKey } from "./tree";
-import { TagInput } from "./inputs";
+import { validateRecognition } from "./recognition";
 import { cloneValue, createId, localDayKey } from "./utils";
 import type { ReviewCenterSettings, ReviewMode, ReviewParameters, ReviewScope } from "./types";
 import { runOptimizer, type OptimizerResult } from "./optimizer";
@@ -26,26 +26,16 @@ export class OptionsWorkspace {
     if (signature(this.host.settings) !== this.baseline) throw new Error("复习组设置已在别处修改。请还原草稿后重新编辑，避免覆盖新设置。");
     this.validators.forEach((validate) => validate());
     for (const g of [...this.draft.noteGroups, ...this.draft.cardGroups]) if (!g.name.trim()) throw new Error("请输入组名称。");
+    for (const g of [...this.draft.noteGroups, ...this.draft.cardGroups]) if (g.recognition) g.recognition = validateRecognition(g.recognition);
     await this.host.saveReviewOptions({ ...this.host.settings, noteGroups: this.draft.noteGroups, cardGroups: this.draft.cardGroups, presets: this.draft.presets });
     this.reset();
   }
   renderGroupFields(parent: HTMLElement, scope: ReviewScope): void {
     const group = groupsFor(this.draft, scope.mode).find((g) => g.id === scope.groupId);
     if (!group) return;
-    const key = scopeKey({ mode: scope.mode, groupId: scope.groupId }) + ":tags";
     new Setting(parent).setName("组名称").addText((t) => t.setValue(group.name).onChange((v) => { group.name = v; }));
-    const tags = new Setting(parent).setName("标签集").setDesc("匹配任意一个，包含子标签。例如 #review 包含 #review/伤寒。");
-    let input!: TagInput;
-    input = new TagInput(this.host.app, tags.controlEl, group.tags, (v) => { group.tags = v; this.raw.set(key, input.input.value); }, "复习组标签");
-    input.input.value = this.raw.get(key) ?? "";
-    input.input.oninput = () => this.raw.set(key, input.input.value);
-    // Read the shared draft rather than a detached input after switching tabs or groups.
-    this.validators.set(key, () => {
-      if (!groupsFor(this.draft, scope.mode).includes(group)) return;
-      group.tags = parseTags([...group.tags, this.raw.get(key) ?? ""].join("\n"));
-      this.raw.delete(key);
-    });
-    this.cleaners.push(() => input.destroy());
+    new Setting(parent).setName("识别范围").setDesc("文件夹、标签以及包含／排除条件，在笔记与卡片各自的识别页统一设置。")
+      .addButton((b) => b.setButtonText(scope.mode === "note" ? "笔记识别" : "卡片识别").onClick(() => this.host.openRecognitionSettings(scope.mode)));
   }
   render(parent: HTMLElement, scope: ReviewScope, redraw: () => void): void {
     this.dispose();
@@ -203,7 +193,8 @@ export class OptionsWorkspace {
     const save = new Setting(parent).setName("保存修改").setDesc("切换组保留草稿。保存后应用所有已编辑的组和预设；默认不改变已有到期时间。");
     save.addButton((b) => b.setButtonText("还原草稿").onClick(() => { if (!this.busy) { this.reset(); redraw(); } }));
     save.addButton((b) => b.setButtonText("保存").setCta().onClick(() => {
-      b.setDisabled(true); void this.save().then(() => { redraw(); new Notice("复习选项已保存"); }).catch((e) => error.setText(String(e))).finally(() => b.setDisabled(false));
+      b.setDisabled(true); void this.save().then(() => { redraw(); new Notice("复习选项已保存"); })
+        .catch((e) => { error.setText(String(e)); }).finally(() => { b.setDisabled(false); });
     }));
   }
   private renderSimulation(parent: HTMLElement, result: OptimizerResult, apply: (value: number) => void): void {

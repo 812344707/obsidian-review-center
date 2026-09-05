@@ -93,6 +93,22 @@ export class VaultScanner {
     return { ...reconciled, history };
   }
 
+  async refreshSource(source: SourceRecord): Promise<{ record: SourceRecord; history: HistoryEvent[] }> {
+    const verified = await this.verifyEntry(source, "note");
+    const record = verified.record;
+    if (!record || record.sourceStatus === "deleted") throw new Error("当前笔记已删除，无法更新卡片。");
+    const file = this.app.vault.getAbstractFileByPath(record.sourcePath);
+    if (!(file instanceof TFile)) throw new Error("笔记路径已变化，请重新打开。");
+    const settings = this.getSettings();
+    if (!resolveGroup(record.tags, settings.cardGroups, file.path)) throw new Error("此笔记未在卡片识别范围内，请在“卡片识别”中设置文件夹或标签条件。");
+    this.knownRevisions = collectLatestRevisions(verified.history);
+    const events: HistoryEvent[] = [];
+    const updated = await this.scanFile({ file, reviewId: record.reviewId }, record, events);
+    await this.store.appendHistory(events);
+    await this.store.saveRecord(updated);
+    return { record: updated, history: [...verified.history, ...events] };
+  }
+
   async scan(onProgress?: ProgressReporter): Promise<ScanResult> {
     const progress = new PreparationTracker(onProgress);
     await this.store.initialize();
@@ -118,7 +134,7 @@ export class VaultScanner {
     const watchedFiles = allMarkdown.filter((file) => {
       if (pathIsInside(file.path, settings.dataFolder)) return false;
       const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
-      return resolveGroup(tags, settings.noteGroups) || resolveGroup(tags, settings.cardGroups);
+      return resolveGroup(tags, settings.noteGroups, file.path) || resolveGroup(tags, settings.cardGroups, file.path);
     });
     const migrationWarnings = new Map<string, string[]>();
     const blockedIdentityPaths = new Set<string>();
@@ -136,7 +152,7 @@ export class VaultScanner {
       const known = recordById.get(readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter) ?? "") ??
         recordByPath.get(file.path);
       const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
-      if (!known && !resolveGroup(tags, settings.cardGroups)) continue;
+      if (!known && !resolveGroup(tags, settings.cardGroups, file.path)) continue;
       try {
         const original = await this.app.vault.read(file);
         const conversion = convertLegacySection(original, settings.reviewHeading, settings.reviewHeadingLevel, settings.reviewCalloutTypes);
@@ -281,7 +297,7 @@ export class VaultScanner {
     const now = new Date();
     const cache = this.app.metadataCache.getFileCache(entry.file);
     const tags = cache ? (getAllTags(cache) ?? []) : [];
-    const cardGroup = resolveGroup(tags, settings.cardGroups);
+    const cardGroup = resolveGroup(tags, settings.cardGroups, entry.file.path);
     let parsed: ReturnType<typeof parseReviewCallouts> | undefined;
     let scannedMarkdown = "";
     if (migrationWarnings?.length) {

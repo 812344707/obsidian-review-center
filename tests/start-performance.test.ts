@@ -64,6 +64,40 @@ describe("review start disk I/O and coordination", () => {
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+  it("does not lose a second authored card when a prior local update finishes late", async () => {
+    const h = harness(), first = deferred<void>(), second = deferred<void>();
+    const refresh = vi.spyOn(h.plugin.service, "refreshSource").mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const paths = Reflect.get(h.plugin, "authoringFiles") as Map<string, number>;
+    const markdown = "> [!review]\n> {{c1::文字}}\n";
+    paths.set("资料/source.md", 1);
+    h.metadataEvents.get("changed")!({ path: "资料/source.md" }, markdown);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(refresh).toHaveBeenCalledOnce();
+    paths.set("资料/source.md", 2);
+    h.metadataEvents.get("changed")!({ path: "资料/source.md" }, markdown);
+    first.resolve(); await vi.advanceTimersByTimeAsync(0);
+    expect(paths.get("资料/source.md")).toBe(2);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    second.resolve(); await vi.advanceTimersByTimeAsync(0);
+    expect(paths.has("资料/source.md")).toBe(false);
+    expect(h.scanner.scan).not.toHaveBeenCalled();
+  });
+
+  it("follows a folder rename while a card draft is waiting to be saved", async () => {
+    const h = harness(), paths = Reflect.get(h.plugin, "authoringFiles") as Map<string, number>;
+    const refresh = vi.spyOn(h.plugin.service, "refreshSource").mockResolvedValue();
+    paths.set("资料/source.md", 10);
+    const markdown = "> [!review]\n> {{c1::文字}}\n";
+    h.metadataEvents.get("changed")!({ path: "资料/source.md" }, markdown);
+    h.vaultEvents.get("rename")!({ path: "新资料" }, "资料");
+    h.metadataEvents.get("changed")!({ path: "新资料/source.md" }, markdown);
+    await vi.advanceTimersByTimeAsync(700);
+    expect(refresh).toHaveBeenCalledExactlyOnceWith("新资料/source.md");
+    expect(paths.size).toBe(0);
+    expect(h.scanner.scan).not.toHaveBeenCalled();
+  });
+
   it.each(["note", "card"] as const)("starts %s from the loaded index without rescanning 1000 unchanged sources", async (mode) => {
     const h = harness();
     h.data.records = Array.from({ length: 1000 }, (_, i) => fixtureRecord(`source-${i}`));
@@ -224,7 +258,7 @@ describe("review start disk I/O and coordination", () => {
     const h = harness(); h.data.records = [];
     await h.plugin.startReview("note");
     expect(h.scanner.scan).not.toHaveBeenCalled();
-    expect(Notice).toHaveBeenCalledWith(expect.stringContaining("整理材料"));
+    expect(Notice).toHaveBeenCalledWith(expect.stringContaining("整理数据"));
     expect(h.openCenter).toHaveBeenCalledWith(true);
   });
 

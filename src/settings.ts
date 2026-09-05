@@ -1,13 +1,14 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting } from "obsidian";
 import { createGroup, groupsFor } from "./config";
 import type { ReviewCenterSettings, ReviewGroup, ReviewMode } from "./types";
 import { cloneValue, createId } from "./utils";
 import { folderInput } from "./inputs";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import type ReviewCenterPlugin from "./main";
+import { renderRecognitionEditor } from "./recognition-editor";
 export { DEFAULT_SETTINGS } from "./config";
 
-const TABS = [["groups", "复习分组"], ["cards", "卡片识别"], ["data", "数据与备份"], ["display", "显示"]] as const;
+const TABS = [["groups", "复习分组"], ["notes", "笔记识别"], ["cards", "卡片识别"], ["data", "数据与备份"], ["display", "显示"]] as const;
 type SettingsPage = typeof TABS[number][0];
 type DisplayDraft = Pick<ReviewCenterSettings, "showNoteHeatmap" | "showCardHeatmap" | "autoOpenDashboard">;
 
@@ -20,6 +21,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private displayDraft?: DisplayDraft;
   private migrating = false;
   constructor(app: App, private readonly host: ReviewCenterPlugin) { super(app, host); }
+  showRecognition(mode: ReviewMode): void { this.page = mode === "note" ? "notes" : "cards"; this.mode = mode; this.display(); }
   hide(): void { this.clean(); }
   private clean(): void {
     this.cleaners.forEach((clean) => clean()); this.cleaners = [];
@@ -49,13 +51,13 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     });
     const panel = root.createDiv({ cls: "review-settings-panel", attr: { role: "tabpanel", id: "review-settings-panel", "aria-labelledby": "review-settings-tab-" + this.page } });
     if (this.page === "groups") this.renderGroups(panel);
-    else if (this.page === "cards") this.renderCards(panel);
+    else if (this.page === "notes" || this.page === "cards") this.renderRecognition(panel, this.page === "notes" ? "note" : "card");
     else if (this.page === "data") this.renderData(panel);
     else this.renderDisplay(panel);
   }
 
   private renderGroups(root: HTMLElement): void {
-    root.createEl("p", { cls: "review-settings-intro", text: "按标签及其层级分组，卡片继承来源文章的标签。每日上限、学习步长等复习参数，请在主页各行的齿轮 → 选项中设置。" });
+    root.createEl("p", { cls: "review-settings-intro", text: "管理复习组名称和优先级；文件夹、标签条件分别在“笔记识别”“卡片识别”中设置。每日上限、学习步长等参数在主页齿轮 → 选项中设置。" });
     const selector = new Setting(root).setName("复习组");
     selector.addDropdown((d) => d.addOption("note", "笔记复习").addOption("card", "卡片复习").setValue(this.mode)
       .onChange((value) => { this.mode = value as ReviewMode; this.display(); }));
@@ -75,21 +77,28 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
       const editor = root.createDiv({ cls: "review-group-editor" }); editor.toggleClass("is-card", this.mode === "card");
       workspace.renderGroupFields(editor, { mode: this.mode, groupId: group.id });
     }
-    else root.createEl("p", { text: "从“管理复习组”新增一组，填写需要纳入的标签。" });
+    else root.createEl("p", { text: "从“管理复习组”新增一组，再设置识别范围。" });
     this.saveRow(root, "保存复习分组", "切换分类、模式或组保留草稿。保存应用已编辑的组及共享预设；删除组保留原文和复习进度。",
       () => workspace.save(), () => workspace.reset());
     new Setting(root).setName("批量纳入文章").setDesc("按文件夹或标签集筛选文章，预览后补充复习标签。")
       .addButton((b) => b.setButtonText("批量添加标签").onClick(() => new BulkTagsModal(this.app, this.host).open()));
   }
 
-  private renderCards(root: HTMLElement): void {
-    root.createEl("p", { cls: "review-settings-intro", text: "笔记与卡片使用同一套标签层级，但识别范围相互独立。" });
-    new Setting(root).setName("整篇文章的识别规则").setDesc("文章命中“复习分组”中的笔记标签时，整篇纳入笔记复习；默认标签是 #review，并自动包含 #review/伤寒 等子标签。文章复习不要求包含复习块。")
-      .setHeading();
-    new Setting(root).setName("文章内卡片的识别规则").setDesc("文章先要命中卡片复习组的标签；随后只把 [!review] 提示块中的问答和挖空制成卡片。普通正文和其他类型提示块不会制卡。每篇可有多个复习块，标题可改，折叠或展开都能识别。")
-      .setHeading();
-    root.createEl("pre", { cls: "review-callout-example", text: "> [!review]- 复习\n> 问:: 这一节的核心观点是什么？\n> 答:: 这里填写答案。" });
-    new Setting(root).setName("迁移与识别异常").setDesc("查看旧复习章节转换、标识冲突及内容变更；修正后刷新即可重新检查。")
+  private renderRecognition(root: HTMLElement, mode: ReviewMode): void {
+    this.mode = mode;
+    root.createEl("p", { cls: "review-settings-intro", text: mode === "note" ? "笔记识别：条件匹配的整篇文章进入笔记复习，无需复习块。" : "卡片识别：先按以下条件选文章，再识别其中 [!review] 块里的问答和填空。与笔记范围独立。" });
+    const workspace = this.host.optionsWorkspace, groups = groupsFor(workspace.draft, mode);
+    const group = groups.find((g) => g.id === this.selected[mode]) ?? groups[0];
+    if (group) this.selected[mode] = group.id;
+    new Setting(root).setName("识别到复习组").addDropdown((d) => {
+      if (!groups.length) d.addOption("", "请先新增复习组");
+      for (const g of groups) d.addOption(g.id, g.name);
+      d.setValue(group?.id ?? "").onChange((v) => { this.selected[mode] = v; this.display(); });
+    });
+    if (group) renderRecognitionEditor(this.app, root, group, () => this.display(), (clean) => this.cleaners.push(clean));
+    this.saveRow(root, mode === "note" ? "保存笔记识别" : "保存卡片识别", "保存后点击主页“整理数据”更新清单；切换页面保留草稿，移出范围保留进度。", () => workspace.save(), () => workspace.reset());
+    if (mode === "card") root.createEl("pre", { cls: "review-callout-example", text: "> [!review]- 复习\n> 问:: 这一节的核心观点是什么？\n> 答:: 这里填写答案。\n\n> [!review]- 填空\n> 需要记住{{c1::这段文字}}。" });
+    new Setting(root).setName("识别与内容异常").setDesc("查看问题原因和对应处理办法；修正后重新检查。")
       .addButton((b) => b.setButtonText("查看待处理内容").onClick(() => this.openManagement()));
   }
 
@@ -139,8 +148,13 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     row.addButton((b) => b.setButtonText("还原草稿").onClick(() => { reset(); this.display(); }));
     row.addButton((b) => b.setButtonText("保存").setCta().onClick(() => {
       b.setDisabled(true);
-      void Promise.resolve().then(save).then(() => { this.display(); new Notice(title + "已完成"); })
-        .catch((e) => error.setText(e instanceof Error ? e.message : String(e))).finally(() => b.setDisabled(false));
+      void Promise.resolve().then(save).then(() => {
+        this.display();
+        this.containerEl.createDiv({ cls: "review-settings-saved", text: title + "已完成", attr: { role: "status" } });
+      })
+        .catch((e) => { error.setText(e instanceof Error ? e.message : String(e)); })
+        // Obsidian components are thenable; returning one makes Promise assimilation loop.
+        .finally(() => { b.setDisabled(false); });
     }));
   }
   private openManagement(): void { this.host.closePluginSettings(); void this.host.openManagement(); }

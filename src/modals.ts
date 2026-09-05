@@ -43,6 +43,9 @@ export class ChangedCardsModal extends Modal {
             .setValue(this.choices.get(key) ? "reset" : "keep")
             .onChange((value) => this.choices.set(key, value === "reset")),
         );
+      const preview = contentEl.createEl("details", { cls: "review-change-preview" });
+      preview.createEl("summary", { text: "查看当前内容" });
+      preview.createEl("pre", { text: item.content.raw });
     }
 
     const batch = contentEl.createDiv({ cls: "review-center-modal-actions" });

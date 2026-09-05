@@ -8,7 +8,7 @@ export function collectEntries(records: SourceRecord[], mode: ReviewMode, settin
   const entries: QueueEntry[] = [];
   for (const record of records) {
     if (record.sourceStatus !== "active" && !(mode === "note" && record.sourceStatus === "parse-error")) continue;
-    const group = resolveGroup(record.tags, groupsFor(settings, mode));
+    const group = resolveGroup(record.tags, groupsFor(settings, mode), record.sourcePath);
     if (!group || (groupId && group.id !== groupId) || !tagsMatch(record.tags, tagPath)) continue;
     const path = parameterPath(record.tags, group), resolved = nodeParameters(settings, mode, group, path);
     for (const item of mode === "note" ? [record.note] : Object.values(record.cards)) {
@@ -70,7 +70,7 @@ export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[]
     const budgets: Budget[] = [...paths].map((path) => ({ path, p: nodeParameters(settings, mode, group, path, now).parameters, fresh: 0, due: 0 }));
     for (const event of firstReviews) {
       const record = recordMap.get(event.sourceId);
-      const owner = event.groupId ?? resolveGroup(record?.tags ?? [], allGroups)?.id;
+      const owner = event.groupId ?? resolveGroup(record?.tags ?? [], allGroups, record?.sourcePath)?.id;
       if (owner !== group.id) continue;
       const tags = event.sourceTags ?? record?.tags ?? [];
       for (const budget of budgets) if (!budget.path || tagsMatch(tags, budget.path)) {
@@ -101,7 +101,7 @@ function combine(a: QueueEntry[], b: QueueEntry[], order: "before" | "mixed" | "
 export function getQueueCounts(records: SourceRecord[], history: HistoryEvent[], settings: ReviewCenterSettings,
   mode: ReviewMode, now = new Date(), groupId?: string, tagPath?: string): QueueCounts {
   const queue = buildDailyQueue(records, history, settings, mode, now, false, groupId, tagPath);
-  const scoped = records.filter((r) => { const g = resolveGroup(r.tags, groupsFor(settings, mode)); return g && (!groupId || g.id === groupId) && tagsMatch(r.tags, tagPath); });
+  const scoped = records.filter((r) => { const g = resolveGroup(r.tags, groupsFor(settings, mode), r.sourcePath); return g && (!groupId || g.id === groupId) && tagsMatch(r.tags, tagPath); });
   const items = scoped.flatMap((r) => mode === "note" ? [r.note] : Object.values(r.cards));
   return { due: queue.filter((e) => !e.isNew).length, learning: queue.filter(isLearning).length, review: queue.filter((e) => !e.isNew && !isLearning(e)).length,
     new: queue.filter((e) => e.isNew).length, suspended: items.filter((i) => i.status === "suspended").length,

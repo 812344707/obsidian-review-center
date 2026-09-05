@@ -6,8 +6,8 @@ import type {
 import { escapeRegExp, hashText } from "./utils";
 
 const BLOCK_ID_PATTERN = /^\s*\^(rv-[a-z0-9-]+)\s*$/i;
-const QUESTION_PATTERN = /^\s*(?:[-*+]\s+)?问::\s*(.+?)\s*$/;
-const ANSWER_PATTERN = /^\s*答::\s*(.*)$/;
+const QUESTION_PATTERN = /^\s*(?:[-*+]\s+)?问[:：]{2}\s*(.*?)\s*$/;
+const ANSWER_PATTERN = /^\s*答[:：]{2}\s*(.*)$/;
 const HEADING_PATTERN = /^(#{1,6})\s+(.+?)\s*$/;
 const CLOZE_PATTERN = /\{\{c(\d+)::([\s\S]*?)(?:::(.*?))?\}\}/g;
 
@@ -99,6 +99,7 @@ function parseQuestionAnswerCards(
 
     const questionStart = index;
     const question = lines[index].match(QUESTION_PATTERN)?.[1]?.trim() ?? "";
+    if (!question) warnings.push(`第 ${questionStart + 1} 行的问答卡问题为空。`);
     let answerLine = -1;
     let cursor = index + 1;
     let localFence: string | null = null;

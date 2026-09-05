@@ -40,7 +40,7 @@ export function scopeHistory(history: HistoryEvent[], records: SourceRecord[], s
     if (!scope.groupId && !scope.tagPath) return true;
     const record = sources.get(event.sourceId);
     const tags = event.sourceTags ?? record?.tags ?? [];
-    const groupId = event.groupId ?? resolveGroup(tags, groupsFor(settings, scope.mode))?.id;
+    const groupId = event.groupId ?? resolveGroup(tags, groupsFor(settings, scope.mode), record?.sourcePath)?.id;
     return (!scope.groupId || groupId === scope.groupId) && tagsMatch(tags, scope.tagPath);
   });
 }

@@ -45,4 +45,19 @@ describe("vault-wide tag rewrite", () => {
     const s = fixtureSettings(); s.cardGroups[0].tags = ["中医"];
     expect(rewriteTagReferences(s, { from: "中医/伤寒", to: "医学/伤寒" }, false).cardGroups[0].tags).toEqual(["中医", "医学/伤寒"]);
   });
+  it("preserves formula logic on completed tag rename, partial work and deletion", () => {
+    const s = fixtureSettings();
+    s.noteGroups[0].recognition = { match: "all", rules: [
+      { field: "folder", operator: "contains", value: "中医" },
+      { field: "tag", operator: "excludes", value: "中医/草稿" },
+    ] };
+    const full = rewriteTagReferences(s, { from: "中医", to: "医学" }, false).noteGroups[0].recognition!;
+    expect(full.match).toBe("all");
+    expect(full.rules).toEqual([
+      { field: "folder", operator: "contains", value: "中医" },
+      { field: "tag", operator: "excludes", value: "医学/草稿" },
+    ]);
+    expect(rewriteTagReferences(s, { from: "中医", to: "医学" }, true).noteGroups[0].recognition).toEqual(s.noteGroups[0].recognition);
+    expect(rewriteTagReferences(s, { from: "中医" }, false).noteGroups[0].recognition).toEqual(s.noteGroups[0].recognition);
+  });
 });

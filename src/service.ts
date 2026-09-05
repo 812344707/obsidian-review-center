@@ -65,6 +65,16 @@ export class ReviewService {
 
   refresh(onProgress?: ProgressReporter): Promise<boolean> { return this.enqueue(() => this.performRefresh(onProgress)); }
 
+  refreshSource(path: string): Promise<void> {
+    return this.enqueue(async () => {
+      const record = this.records.find((r) => r.sourcePath === path);
+      if (!record) throw new Error("请先整理数据，将此笔记加入复习清单。");
+      const result = await this.scanner.refreshSource(record);
+      Object.assign(record, result.record);
+      this.history = result.history;
+    });
+  }
+
   loadStored(): Promise<void> {
     return this.enqueue(async () => { this.applyScanResult(await this.scanner.loadStored()); });
   }
@@ -362,7 +372,7 @@ export class ReviewService {
     const result: Array<{ record: SourceRecord; item: ReviewItem }> = [];
     for (const record of this.records) {
       if (sourceId && record.reviewId !== sourceId) continue;
-      if (record.sourceStatus === "out-of-scope" || !resolveGroup(record.tags, this.getSettings().cardGroups)) continue;
+      if (record.sourceStatus === "out-of-scope" || !resolveGroup(record.tags, this.getSettings().cardGroups, record.sourcePath)) continue;
       for (const item of Object.values(record.cards)) {
         if (item.status === "pending-change") result.push({ record, item });
       }
@@ -514,7 +524,7 @@ export class ReviewService {
   restoreConflicts: string[] = [];
   exportScope(scope: ReviewScope): Promise<string> {
     return this.enqueue(async () => {
-      const records = this.records.filter((r) => resolveGroup(r.tags, groupsFor(this.getSettings(), scope.mode))?.id === scope.groupId && tagsMatch(r.tags, scope.tagPath));
+      const records = this.records.filter((r) => resolveGroup(r.tags, groupsFor(this.getSettings(), scope.mode), r.sourcePath)?.id === scope.groupId && tagsMatch(r.tags, scope.tagPath));
       const keys = records.flatMap((r) => (scope.mode === "note" ? [r.note] : Object.values(r.cards)).map((i) => itemKey(r.reviewId, i.id)));
       const wanted = new Set(keys);
       const settings = cloneValue(this.getSettings());
@@ -614,7 +624,7 @@ export class ReviewService {
 
   private findAnyEntry(key: string): QueueEntry | null {
     for (const record of this.records) {
-      const group = resolveGroup(record.tags, groupsFor(this.getSettings(), this.session?.mode ?? "card"));
+      const group = resolveGroup(record.tags, groupsFor(this.getSettings(), this.session?.mode ?? "card"), record.sourcePath);
       if (!tagsMatch(record.tags, this.session?.tagPath) || !group || (this.session?.groupId && group.id !== this.session.groupId) || record.sourceStatus === "out-of-scope" || record.sourceStatus === "deleted") continue;
       const items = this.session?.mode === "note" ? [record.note] : Object.values(record.cards);
       for (const item of items) {

@@ -2,6 +2,7 @@ import { Component, Platform, setIcon, type MarkdownView, type WorkspaceLeaf } f
 import type { Grade } from "ts-fsrs";
 import { GRADE_LABELS, REVIEW_GRADES } from "./scheduler";
 import type { QueueEntry } from "./types";
+import type { CardAuthoringAction } from "./card-authoring";
 
 export type OverlayMode = "note" | "context";
 
@@ -14,6 +15,8 @@ interface OverlayHost {
   undoActiveNote(): Promise<void>;
   returnToReview(): Promise<void>;
   exitReview(): Promise<void>;
+  captureCardSelection(): void;
+  authorCurrentNote(action: CardAuthoringAction): Promise<void>;
 }
 
 export class ReviewOverlay extends Component {
@@ -84,6 +87,12 @@ export class ReviewOverlay extends Component {
     const entry = this.host.getOverlayEntry();
     const label = this.rootEl.createDiv({ cls: "review-center-overlay-label" });
     label.createSpan({ text: entry?.sourceTitle ?? "笔记复习" });
+    const tools = label.createDiv({ cls: "review-authoring-actions" });
+    for (const [action, title] of [["review", "制卡"], ["qa", "问答"], ["cloze", "填空"]] as const) {
+      const button = tools.createEl("button", { text: title, attr: { "aria-label": title, "data-author-card": action } });
+      button.onpointerdown = (event) => { this.host.captureCardSelection(); event.preventDefault(); };
+      button.onclick = () => void this.host.authorCurrentNote(action);
+    }
     const actions = this.rootEl.createDiv({ cls: "review-center-overlay-actions" });
     for (const grade of REVIEW_GRADES) {
       const button = actions.createEl("button", { cls: `review-grade grade-${grade}` });
@@ -123,12 +132,19 @@ export class ReviewOverlay extends Component {
     const focusOut = () => {
       document.defaultView?.setTimeout(() => root.removeClass("is-keyboard-active"), 120);
     };
+    const viewport = document.defaultView?.visualViewport;
+    const position = () => root.style.setProperty("--review-keyboard-inset", Platform.isMobile && viewport ? `${Math.max(0, document.defaultView!.innerHeight - viewport.height - viewport.offsetTop)}px` : "0px");
     document.addEventListener("focusin", focusIn);
     document.addEventListener("focusout", focusOut);
+    viewport?.addEventListener("resize", position);
+    viewport?.addEventListener("scroll", position);
     focusIn();
+    position();
     this.keyboardCleanup = () => {
       document.removeEventListener("focusin", focusIn);
       document.removeEventListener("focusout", focusOut);
+      viewport?.removeEventListener("resize", position);
+      viewport?.removeEventListener("scroll", position);
     };
   }
 }

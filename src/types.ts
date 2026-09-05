@@ -132,10 +132,17 @@ export interface NodeOptions {
   retention?: number;
 }
 export interface ReviewScope { mode: ReviewMode; groupId: string; tagPath?: string }
+export interface RecognitionRule {
+  field: "folder" | "tag";
+  operator: "is" | "is-not" | "contains" | "excludes";
+  value: string;
+}
+export interface RecognitionFilter { match: "all" | "any"; rules: RecognitionRule[] }
 export interface ReviewGroup {
   id: string;
   name: string;
   tags: string[];
+  recognition?: RecognitionFilter;
   presetId?: string;
   nodes?: Record<string, NodeOptions>;
   parameters: ReviewParameters;

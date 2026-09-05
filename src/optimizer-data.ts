@@ -30,7 +30,7 @@ export function buildOptimizerInput(records: SourceRecord[], history: HistoryEve
   for (const event of history) { const key = itemKey(event.sourceId, event.itemId); const list = byItem.get(key) ?? []; list.push(event); byItem.set(key, list); }
   for (const record of records) {
     if (["deleted", "out-of-scope"].includes(record.sourceStatus)) continue;
-    const group = resolveGroup(record.tags, groupsFor(settings, preset.mode)); if (!group) continue;
+    const group = resolveGroup(record.tags, groupsFor(settings, preset.mode), record.sourcePath); if (!group) continue;
     const owner = nodeParameters(settings, preset.mode, group, parameterPath(record.tags, group)); if (owner.presetId !== preset.id) continue;
     for (const item of preset.mode === "note" ? [record.note] : Object.values(record.cards)) {
       if (["removed", "pending-change"].includes(item.status)) continue;

@@ -21,6 +21,10 @@ export function folderInput(app: App, input: HTMLInputElement, changed: (value: 
     (value) => { input.value = value; changed(value); });
 }
 
+export function tagInput(app: App, input: HTMLInputElement, changed: (value: string) => void): TextSuggest {
+  return new TextSuggest(app, input, () => collectVaultTags(app), (value) => { input.value = value; changed(value); }, true);
+}
+
 export class TagInput {
   readonly input: HTMLInputElement;
   private readonly chips: HTMLElement;

@@ -44,6 +44,42 @@ describe("current material and cross-device progress verification", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(today); });
   afterEach(() => vi.useRealTimers());
 
+  it("updates only the authored source, keeps prior schedules and creates stable new card identities", async () => {
+    const h = await harness(), original = structuredClone(h.records.get("source")!);
+    h.file.content += "\n> [!review]\n> 问:: 新问题\n> 答:: 新答案\n";
+    await h.service.refreshSource(h.file.path);
+    const updated = h.records.get("source")!;
+    expect(h.scan).not.toHaveBeenCalled(); expect(h.store.loadAllRecords).not.toHaveBeenCalled();
+    expect(Object.keys(updated.cards)).toHaveLength(2);
+    expect(updated.note.schedule).toEqual(original.note.schedule);
+    expect(updated.cards["rv-one:qa"].schedule).toEqual(original.cards["rv-one:qa"].schedule);
+    expect(updated.cards["rv-one:qa"].status).toBe("active");
+    expect(h.file.content.match(/\^rv-/g)).toHaveLength(2);
+    expect(h.history.filter((e) => e.action === "review")).toHaveLength(0);
+  });
+
+  it("uses independent folder conditions during scanning and blocks grading after moving out of scope", async () => {
+    const h = await harness();
+    h.settings.cardGroups[0].recognition = { match: "all", rules: [{ field: "folder", operator: "is", value: "资料" }] };
+    h.settings.noteGroups[0].recognition = { match: "all", rules: [{ field: "folder", operator: "is", value: "别处" }] };
+    h.file.content = h.file.content.replace("tags: [note, card]", "tags: []");
+    await h.service.refresh();
+    expect(h.service.counts("note").new).toBe(0);
+    expect(h.service.counts("card").new).toBe(1);
+    h.service.startSession("card"); await h.service.prepareCurrent();
+    h.file.path = "别处/source.md";
+    await expect(h.service.gradeCurrent(3)).rejects.toThrow("本次未评分");
+    expect(h.history.filter((e) => e.action === "review")).toHaveLength(0);
+  });
+
+  it("keeps existing card progress while an authored question is incomplete", async () => {
+    const h = await harness(), original = structuredClone(h.records.get("source")!);
+    h.file.content += "\n> [!review]\n> 问:: \n> 答:: 新答案\n";
+    await h.service.refreshSource(h.file.path);
+    expect(h.records.get("source")!.cards).toEqual(original.cards);
+    expect(h.records.get("source")!.sourceStatus).toBe("parse-error");
+  });
+
   it("loads the saved list without reading Markdown and verifies only the current file among 1000 unrelated notes", async () => {
     const h = await harness();
     for (let i = 0; i < 1000; i++) h.files.push({ ...h.file, path: `其他/${i}.md`, content: `---\nreview_id: other-${i}\ntags: []\n---\n无关正文` });

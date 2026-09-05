@@ -34,6 +34,8 @@ import { OperationHistoryModal, type OperationJob } from "./operation-history";
 import { planReschedule, createRescheduleJob, runRescheduleJob } from "./reschedule";
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 import type { PreparationProgress } from "./preparation";
+import { cardAuthoringEdit, type CardAuthoringAction } from "./card-authoring";
+import { parseReviewCallouts } from "./parser";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -44,11 +46,16 @@ export default class ReviewCenterPlugin extends Plugin {
   private originalSettings?: ReviewCenterSettings;
 
   private overlay!: ReviewOverlay;
+  private settingsTab!: ReviewCenterSettingTab;
   private overlayMode: OverlayMode | null = null;
   private sourceLeaf: WorkspaceLeaf | null = null;
   private refreshPromise: Promise<boolean> | null = null;
   preparation: PreparationProgress & { state: "idle" | "running" | "done" | "error" } = { state: "idle", percent: 0, message: "" };
   materialsDirty = false;
+  private authorSelection?: { path: string; markdown: string; from: number; to: number };
+  private authoringFiles = new Map<string, number>();
+  private authoringVersion = 0;
+  private authoringTimers = new Map<string, number>();
   private loadPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
@@ -79,7 +86,8 @@ export default class ReviewCenterPlugin extends Plugin {
     this.registerView(REVIEW_CENTER_VIEW, (leaf) => new ReviewCenterView(leaf, this));
     this.addRibbonIcon("brain", "打开渐进式复习", () => void this.openReviewCenter(true));
     this.registerCommands();
-    this.addSettingTab(new ReviewCenterSettingTab(this.app, this));
+    this.settingsTab = new ReviewCenterSettingTab(this.app, this);
+    this.addSettingTab(this.settingsTab);
     this.registerVaultEvents();
     this.registerWorkspaceEvents();
     this.registerInterval(window.setInterval(() => void this.tickReview(), 15000));
@@ -90,6 +98,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   onunload(): void {
+    for (const timer of this.authoringTimers.values()) window.clearTimeout(timer);
     this.service?.setTimingActive(false);
     this.overlay?.detach();
     this.optionsWorkspace?.dispose();
@@ -99,6 +108,16 @@ export default class ReviewCenterPlugin extends Plugin {
   openPluginSettings(): void {
     const app = this.app as unknown as { setting: { open(): void; openTabById(id: string): void } };
     app.setting.open(); app.setting.openTabById(this.manifest.id);
+  }
+  openRecognitionSettings(mode: ReviewMode): void { this.openPluginSettings(); this.settingsTab.showRecognition(mode); }
+  async openIssueSource(record: import("./types").SourceRecord, line = 0): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(record.sourcePath);
+    if (!(file instanceof TFile)) { new Notice("原文已移动或删除，请先整理数据更新路径。"); return; }
+    const leaf = await this.openInSourceLeaf(file, { active: true, eState: { line } });
+    if (leaf.view instanceof MarkdownView) {
+      const editor = leaf.view.editor, position = { line: Math.min(line, editor.lastLine()), ch: 0 };
+      editor.setCursor(position); editor.scrollIntoView({ from: position, to: position }, true);
+    }
   }
   closePluginSettings(): void { (this.app as unknown as { setting: { close(): void } }).setting.close(); }
   async openManagement(): Promise<void> {
@@ -181,7 +200,7 @@ export default class ReviewCenterPlugin extends Plugin {
   async refreshData(showNotice = false): Promise<boolean> {
     if (this.service?.maintenance) return false;
     if (this.refreshPromise) return this.refreshPromise;
-    this.preparation = { state: "running", percent: 0, message: "准备整理材料" };
+    this.preparation = { state: "running", percent: 0, message: "准备整理数据" };
     this.updatePreparationState();
     this.refreshPromise = this.ensureMigrated()
       .then(() => this.service.refresh((progress) => {
@@ -189,11 +208,11 @@ export default class ReviewCenterPlugin extends Plugin {
         this.updatePreparationState();
       }))
       .then(async (ready) => {
-        if (!ready) throw new Error("笔记索引尚未就绪，请稍后再次整理材料。");
+        if (!ready) throw new Error("笔记索引尚未就绪，请稍后再次整理数据。");
         await this.store.flush();
         this.materialsDirty = false;
-        this.preparation = { state: "done", percent: 100, message: "材料整理完成" };
-        if (showNotice) new Notice("材料整理完成，复习进度已保留。");
+        this.preparation = { state: "done", percent: 100, message: "数据整理完成" };
+        if (showNotice) new Notice("数据整理完成，复习进度已保留。");
         return true;
       })
       .catch((error: unknown) => {
@@ -235,6 +254,66 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   get startingReview(): boolean { return this.startPromise !== null; }
+
+  captureCardSelection(): void {
+    this.authorSelection = undefined;
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!view?.file) return;
+    const markdown = view.editor.getValue();
+    let from = view.editor.posToOffset(view.editor.getCursor("from")), to = view.editor.posToOffset(view.editor.getCursor("to"));
+    if (view.getMode() === "preview") {
+      const selected = view.containerEl.doc.getSelection();
+      const text = selected?.toString() ?? "";
+      if (text && selected?.anchorNode && view.contentEl.contains(selected.anchorNode)) {
+        const at = markdown.indexOf(text);
+        if (at < 0 || markdown.indexOf(text, at + 1) >= 0) {
+          this.authorSelection = { path: view.file.path, markdown, from: -1, to: -1 }; return;
+        }
+        from = at; to = at + text.length;
+      } else { from = to = Math.min(from, markdown.length); }
+    }
+    this.authorSelection = { path: view.file.path, markdown, from, to };
+  }
+
+  async authorCurrentNote(action: CardAuthoringAction): Promise<void> {
+    try {
+      if (this.service.maintenance) throw new Error("正在批量处理，请稍后制卡。");
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view?.file) throw new Error("请先打开需要制卡的笔记。");
+      if (!this.authorSelection) this.captureCardSelection();
+      const selection = this.authorSelection; this.authorSelection = undefined;
+      if (!selection || selection.path !== view.file.path || selection.markdown !== view.editor.getValue()) throw new Error("笔记或选区已经变化，请重新选择。");
+      if (selection.from < 0) throw new Error("阅读模式下无法准确定位这段文字，请切换编辑模式后重新选择。");
+      const edit = cardAuthoringEdit(selection.markdown, selection.from, selection.to, action);
+      if (view.getMode() !== "source") await view.leaf.setViewState({ ...view.leaf.getViewState(), state: { ...view.leaf.getViewState().state, mode: "source" } });
+      if (view.editor.getValue() !== selection.markdown) throw new Error("笔记已经变化，请重试。");
+      this.authoringFiles.set(view.file.path, ++this.authoringVersion);
+      view.editor.replaceRange(edit.text, view.editor.offsetToPos(edit.from), view.editor.offsetToPos(edit.to));
+      view.editor.setCursor(view.editor.offsetToPos(edit.cursor));
+      view.editor.focus();
+      this.overlay.sync(view.leaf);
+    } catch (error) { new Notice(errorMessage(error)); }
+  }
+
+  private scheduleAuthoredSource(path: string, markdown: string): void {
+    const version = this.authoringFiles.get(path);
+    if (version === undefined) return;
+    const timer = this.authoringTimers.get(path);
+    if (timer !== undefined) window.clearTimeout(timer);
+    this.authoringTimers.set(path, window.setTimeout(() => {
+      this.authoringTimers.delete(path);
+      if (this.authoringFiles.get(path) !== version) return;
+      const parsed = parseReviewCallouts(markdown);
+      if (!parsed.valid || !parsed.cards.length) return;
+      void this.service.refreshSource(path).then(() => {
+        if (this.authoringFiles.get(path) === version) this.authoringFiles.delete(path);
+        this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
+      }).catch((error) => {
+        // Retain the authored path so the next successful save can retry locally.
+        new Notice(errorMessage(error));
+      });
+    }, 700));
+  }
 
   startReview(mode: ReviewMode, extra = false, groupId?: string, tagPath?: string): Promise<void> {
     return this.runReviewStart(() => this.performStartReview(mode, extra, groupId, tagPath));
@@ -313,7 +392,7 @@ export default class ReviewCenterPlugin extends Plugin {
     if (this.refreshPromise && !await this.refreshPromise) return false;
     await this.ensureLoaded();
     if (!this.service.records.length) {
-      new Notice("请先在主页点击“整理材料”，建立复习清单。");
+      new Notice("请先在主页点击“整理数据”，建立复习清单。");
       await this.openReviewCenter(true);
       return false;
     }
@@ -462,12 +541,12 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private registerCommands(): void {
-    this.addCommand({ id: "organize-materials", name: "整理材料", callback: () => void this.refreshData(true) });
+    this.addCommand({ id: "organize-materials", name: "整理数据", callback: () => void this.refreshData(true) });
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
     this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
-    this.addCommand({ id: "insert-review-callout", name: "插入复习折叠块", editorCallback: (editor) => {
-      editor.replaceSelection("\n> [!review]- 复习\n> 问:: 这里写问题\n> 答:: 这里写答案。\n");
-    } });
+    for (const [id, name, action] of [["insert-review-callout", "插入复习折叠块", "review"], ["insert-review-qa", "插入问答模板", "qa"], ["insert-review-cloze", "选中文字制作填空", "cloze"]] as const) {
+      this.addCommand({ id, name, editorCallback: () => { this.captureCardSelection(); void this.authorCurrentNote(action); } });
+    }
     this.addCommand({
       id: "open-dashboard",
       name: "打开面板",
@@ -668,6 +747,13 @@ export default class ReviewCenterPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (pathIsInside(oldPath, this.settings.dataFolder) && pathIsInside(file.path, this.settings.dataFolder)) return;
+        for (const path of [...this.authoringFiles.keys()]) if (pathIsInside(path, oldPath)) {
+          const timer = this.authoringTimers.get(path);
+          if (timer !== undefined) window.clearTimeout(timer);
+          this.authoringTimers.delete(path);
+          this.authoringFiles.delete(path);
+          this.authoringFiles.set(file.path + path.slice(oldPath.length), ++this.authoringVersion);
+        }
         this.service.sourceRenamed(oldPath, file.path);
         this.materialsDirty = true;
         this.updatePreparationState();
@@ -676,6 +762,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultFileChanged(file.path)));
     this.registerEvent(this.app.metadataCache.on("changed", (file, markdown) => {
       this.service.metadataReady(file.path, markdown);
+      this.scheduleAuthoredSource(file.path, markdown);
     }));
   }
 

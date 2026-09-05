@@ -21,7 +21,7 @@ export async function verifySource(
 ): Promise<VerifiedSource> {
   const history = await store.loadAllHistory(undefined, true);
   const stored = await store.loadRecord(source.reviewId, true);
-  if (!stored) throw new Error("当前条目的进度文件暂不可用，请等待同步完成或整理材料后重试。");
+  if (!stored) throw new Error("当前条目的进度文件暂不可用，请等待同步完成或整理数据后重试。");
   const record = reconcileRecordsWithHistory([stored], history).records[0];
   const direct = app.vault.getAbstractFileByPath(record.sourcePath);
   let file = direct instanceof TFile && !pathIsInside(direct.path, settings.dataFolder) &&
@@ -33,9 +33,9 @@ export async function verifySource(
       app.metadataCache.getFileCache(file)?.frontmatter?.review_id === source.reviewId);
     if (candidates.length === 1) file = candidates[0];
     if (!file) {
-      if (candidates.length > 1) throw new Error("来源笔记存在重复标识，请先整理材料并核对。");
+      if (candidates.length > 1) throw new Error("来源笔记存在重复标识，请先整理数据并核对。");
       if (files.some((file) => file.path === record.sourcePath || !app.metadataCache.getFileCache(file))) {
-        throw new Error("来源笔记的索引尚未就绪，请稍后重试或整理材料。");
+        throw new Error("来源笔记的索引尚未就绪，请稍后重试或整理数据。");
       }
       record.sourceStatus = "deleted";
       return { record, history, sourceHash: "" };
@@ -48,7 +48,7 @@ export async function verifySource(
   const frontmatter = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
   const properties = frontmatter ? parse(frontmatter[1]) : null;
   if (!properties || properties.review_id !== source.reviewId) {
-    throw new Error("来源笔记的标识发生变化，请先整理材料。");
+    throw new Error("来源笔记的标识发生变化，请先整理数据。");
   }
   const propertyTags = (value: unknown): string[] => normalizeTags(
     Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") :
@@ -61,7 +61,7 @@ export async function verifySource(
   record.sourcePath = file.path;
   record.sourceTitle = file.basename;
   record.tags = [...new Set(getAllTags(cache) ?? [])].sort();
-  record.sourceStatus = resolveGroup(record.tags, settings.noteGroups) || resolveGroup(record.tags, settings.cardGroups) ? "active" : "out-of-scope";
+  record.sourceStatus = resolveGroup(record.tags, settings.noteGroups, file.path) || resolveGroup(record.tags, settings.cardGroups, file.path) ? "active" : "out-of-scope";
   if (itemId !== "note" && record.cards[itemId]) {
     const parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
     if (!parsed.valid) {

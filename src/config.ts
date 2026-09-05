@@ -1,5 +1,6 @@
 import type { ReviewCenterSettings, ReviewGroup, ReviewMode, ReviewParameters, ReviewPreset, NodeOptions } from "./types";
 import { createId, localDayKey } from "./utils";
+import { normalizeRecognition, recognitionPriority, recognitionTags } from "./recognition";
 
 export function defaultParameters(mode: ReviewMode): ReviewParameters {
   return {
@@ -56,17 +57,12 @@ export function groupsFor(settings: ReviewCenterSettings, mode: ReviewMode): Rev
   return mode === "note" ? settings.noteGroups : settings.cardGroups;
 }
 
-export function resolveGroup(tags: string[], groups: ReviewGroup[]): ReviewGroup | undefined {
-  const normalized = normalizeTags(tags);
+export function resolveGroup(tags: string[], groups: ReviewGroup[], sourcePath = ""): ReviewGroup | undefined {
   let winner: ReviewGroup | undefined;
   let bestDepth = 0;
   for (const group of groups) {
-    for (const tag of normalizeTags(group.tags)) {
-      if (normalized.some((actual) => actual === tag || actual.startsWith(`${tag}/`))) {
-        const depth = tag.split("/").length;
-        if (depth > bestDepth) { bestDepth = depth; winner = group; }
-      }
-    }
+    const depth = recognitionPriority(tags, sourcePath, group);
+    if (depth > bestDepth) { bestDepth = depth; winner = group; }
   }
   return winner;
 }
@@ -124,7 +120,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
       try { tags = parseTags(Array.isArray(entry.tags) ? entry.tags.filter((t) => typeof t === "string").join("\n") : ""); } catch { /* Invalid scope stays empty. */ }
       return {
         id, name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : mode === "note" ? "笔记复习" : "卡片复习",
-        tags, parameters: normalizeParameters(entry.parameters, mode),
+        tags, recognition: normalizeRecognition(entry.recognition), parameters: normalizeParameters(entry.parameters, mode),
         presetId: typeof entry.presetId === "string" ? entry.presetId : undefined,
         nodes: normalizeNodes(entry.nodes),
       };
@@ -207,7 +203,8 @@ export function naturalCompare(a: string, b: string): number {
   return ordinal(a).localeCompare(ordinal(b), "zh-CN", { numeric: true }) || a.localeCompare(b, "zh-CN");
 }
 export function parameterPath(tags: string[], group: ReviewGroup): string {
-  return normalizeTags(tags).filter((tag) => group.tags.some((root) => tagMatches(tag, root)))
+  const roots = recognitionTags(group);
+  return normalizeTags(tags).filter((tag) => !roots.length || roots.some((root) => tagMatches(tag, root)))
     .sort((a, b) => b.split("/").length - a.split("/").length || naturalCompare(a, b))[0] ?? "";
 }
 export function nodeParameters(settings: ReviewCenterSettings, mode: ReviewMode, group: ReviewGroup, path = "", now = new Date()): { parameters: ReviewParameters; presetId?: string } {
