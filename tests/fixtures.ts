@@ -1,6 +1,12 @@
 import { createSchedule } from "../src/scheduler";
 import { normalizeSettings } from "../src/config";
 import type { HistoryEvent, ReviewItem, ReviewMode, SourceRecord } from "../src/types";
+import type { VaultScanner } from "../src/scanner";
+
+// Service unit tests stub the source I/O boundary; source-verification tests use the real scanner.
+export function fixtureVerifier(history: () => HistoryEvent[] = () => []): Pick<VaultScanner, "verifyEntry"> {
+  return { verifyEntry: async (record) => ({ record: structuredClone(record), history: structuredClone(history()), sourceHash: "fixture" }) };
+}
 
 export const today = new Date(2026, 8, 3, 10, 0, 0);
 export function fixtureSettings() {

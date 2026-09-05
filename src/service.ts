@@ -6,7 +6,8 @@ import {
   previewSchedule,
   resetSchedule,
 } from "./scheduler";
-import { VaultScanner } from "./scanner";
+import { VaultScanner, type ScanResult } from "./scanner";
+import type { ProgressReporter } from "./preparation";
 import { ReviewStore } from "./storage";
 import type {
   FullBackup,
@@ -33,9 +34,10 @@ export class ReviewService {
   conflicts = 0;
   private undoStack: UndoEntry[] = [];
   private gradePromise: Promise<QueueEntry | null> | null = null;
-  private hasLoaded = false;
+  hasLoaded = false;
   private operationTail: Promise<unknown> = Promise.resolve();
   maintenance = false;
+  private prepared: { sessionId: string; key: string; signature: string; sourceHash: string } | null = null;
 
   private enqueue<T>(operation: () => Promise<T>, maintenance = false): Promise<T> {
     if (this.maintenance && !maintenance) return Promise.reject(new Error("正在迁移或批量处理，请稍候。"));
@@ -61,21 +63,65 @@ export class ReviewService {
     private readonly onSessionChanged: (session: ReviewSession | null, undo: UndoEntry[]) => void,
   ) {}
 
-  refresh(): Promise<void> { return this.enqueue(() => this.performRefresh()); }
+  refresh(onProgress?: ProgressReporter): Promise<boolean> { return this.enqueue(() => this.performRefresh(onProgress)); }
 
-  private async performRefresh(): Promise<void> {
-    const result = await this.scanner.scan();
+  loadStored(): Promise<void> {
+    return this.enqueue(async () => { this.applyScanResult(await this.scanner.loadStored()); });
+  }
+
+  sourceChanged(path: string): void { this.scanner.markSourceChanged(path); }
+  sourceCreated(path: string): void { this.scanner.sourceCreated(path); }
+  metadataReady(path: string, markdown: string): void { this.scanner.markMetadataReady(path, markdown); }
+  sourceRenamed(oldPath: string, newPath: string): void { this.scanner.moveSource(oldPath, newPath); }
+
+  private async performRefresh(onProgress?: ProgressReporter): Promise<boolean> {
+    const result = await this.scanner.scan(onProgress);
+    if (result.metadataReady === false) return false;
+    this.applyScanResult(result);
+    return true;
+  }
+
+  private applyScanResult(result: ScanResult): void {
     this.records = result.records;
     this.history = result.history;
     this.conflicts = result.conflicts;
-    this.hasLoaded = true;
-    this.restoringSession = false;
+    this.hasLoaded = result.metadataReady !== false;
+    this.restoringSession = !!this.session && !this.hasLoaded;
+    if (!this.hasLoaded) return;
     if (this.session) {
       const completed = this.session.entryKeys.slice(0, this.session.currentIndex);
       const remaining = this.session.entryKeys.slice(this.session.currentIndex).filter((key) => this.findAnyEntry(key));
       this.session.entryKeys = [...completed, ...remaining];
       this.persistSession();
     }
+  }
+
+  prepareCurrent(): Promise<QueueEntry | null> { return this.enqueue(() => this.performPrepareCurrent()); }
+
+  private async verifyKey(key: string): Promise<string> {
+    const [sourceId, itemId] = key.split("::");
+    const record = this.recordById(sourceId);
+    if (!record) return "";
+    const result = await this.scanner.verifyEntry(record, itemId);
+    if (result.record) Object.assign(record, result.record);
+    else record.sourceStatus = "deleted";
+    this.history = result.history;
+    return result.sourceHash;
+  }
+
+  private async performPrepareCurrent(): Promise<QueueEntry | null> {
+    this.prepared = null;
+    while (this.session && !this.restoringSession && this.session.currentIndex < this.session.entryKeys.length) {
+      const key = this.session.entryKeys[this.session.currentIndex];
+      const sourceHash = await this.verifyKey(key);
+      const entry = this.currentEntry();
+      if (this.currentPendingChange()) return null;
+      if (!entry) return null;
+      if (itemKey(entry.sourceId, entry.item.id) !== key) continue;
+      this.prepared = { sessionId: this.session.id, key, sourceHash, signature: entrySignature(entry) };
+      return entry;
+    }
+    return null;
   }
 
   restoreLocalSession(session: ReviewSession | null, undo: UndoEntry[] = []): void {
@@ -195,13 +241,28 @@ export class ReviewService {
 
   gradeCurrent(rating: Grade): Promise<QueueEntry | null> {
     if (this.gradePromise) return this.gradePromise;
-    this.gradePromise = this.enqueue(() => this.performGrade(rating)).finally(() => { this.gradePromise = null; });
+    const key = this.session?.entryKeys[this.session.currentIndex];
+    const displayed = key ? this.findAnyEntry(key) : null;
+    const expected = this.prepared ?? (displayed && this.session ? {
+      key: key!, sessionId: this.session.id, signature: entrySignature(displayed), sourceHash: "",
+    } : null);
+    this.gradePromise = this.enqueue(() => this.performGrade(rating, expected)).finally(() => { this.gradePromise = null; });
     return this.gradePromise;
   }
 
-  private async performGrade(rating: Grade): Promise<QueueEntry | null> {
+  private async performGrade(rating: Grade, expected: ReviewService["prepared"]): Promise<QueueEntry | null> {
+    if (!expected || !this.session) return null;
+    if (this.session.id !== expected.sessionId || this.session.entryKeys[this.session.currentIndex] !== expected.key) {
+      throw new Error("当前条目已切换，请核对后重新评分。");
+    }
+    const sourceHash = await this.verifyKey(expected.key);
     const entry = this.currentEntry();
-    if (!entry || !this.session) return null;
+    if (!entry || itemKey(entry.sourceId, entry.item.id) !== expected.key ||
+      entrySignature(entry) !== expected.signature ||
+      (entry.item.kind === "note" && expected.sourceHash && expected.sourceHash !== sourceHash)) {
+      this.prepared = null;
+      throw new Error("当前内容或复习进度已变化，本次未评分，请核对更新后的内容。");
+    }
     const record = this.recordById(entry.sourceId);
     if (!record) return null;
     const before = cloneValue(entry.item);
@@ -236,6 +297,7 @@ export class ReviewService {
     }
     this.undoStack = [{ eventId: event.eventId, sourceId: record.reviewId, itemId: after.id, before, after: cloneValue(after), siblings }];
     this.session.currentIndex += 1;
+    this.prepared = null;
     this.session.answerVisible = false;
     this.session.currentStartedAt = new Date().toISOString();
     this.session.currentElapsedMs = 0;
@@ -254,6 +316,8 @@ export class ReviewService {
   undoLast(): Promise<QueueEntry | null> { return this.enqueue(() => this.performUndo()); }
 
   private async performUndo(): Promise<QueueEntry | null> {
+    const last = this.undoStack.at(-1);
+    if (last) await this.verifyKey(itemKey(last.sourceId, last.itemId));
     const undo = this.undoStack.pop();
     if (!undo || !this.session) return this.currentEntry();
     const record = this.recordById(undo.sourceId);
@@ -280,6 +344,7 @@ export class ReviewService {
     this.session.entryKeys[targetIndex] = key;
     this.session.currentIndex = targetIndex;
     this.session.answerVisible = false;
+    this.prepared = null;
     this.session.currentStartedAt = new Date().toISOString();
     this.session.currentElapsedMs = 0;
     this.persistSession();
@@ -313,9 +378,16 @@ export class ReviewService {
     choices: Array<{ sourceId: string; itemId: string; reset: boolean }>,
   ): Promise<void> {
     for (const choice of choices) {
+      const shown = this.recordById(choice.sourceId)?.cards[choice.itemId];
+      if (!shown || shown.status !== "pending-change") continue;
+      const expectedHash = shown.pendingHash, expectedRevision = shown.revision;
+      await this.verifyKey(itemKey(choice.sourceId, choice.itemId));
       const record = this.recordById(choice.sourceId);
       const item = record ? this.itemFromRecord(record, choice.itemId) : undefined;
       if (!record || !item || item.status !== "pending-change") continue;
+      if (item.pendingHash !== expectedHash || item.revision !== expectedRevision) {
+        throw new Error("内容或同步进度又有变化，请重新核对后处理。");
+      }
       const baseRevision = item.revision;
       const updated: ReviewItem = {
         ...(choice.reset ? resetSchedule(item) : { ...item, revision: item.revision + 1 }),
@@ -604,6 +676,10 @@ export class ReviewService {
   private persistSession(): void {
     this.onSessionChanged(this.session ? cloneValue(this.session) : null, cloneValue(this.undoStack));
   }
+}
+
+function entrySignature(entry: QueueEntry): string {
+  return JSON.stringify([entry.sourceTitle, entry.item, entry.group.id, entry.group.parameters]);
 }
 
 function csvCell(value: string): string {

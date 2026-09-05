@@ -59,18 +59,19 @@ export class ReviewStore {
     for (const path of files) {
       const id = path.split("/").at(-2)!; if (jobs.has(id)) continue;
       try { jobs.set(id, JSON.parse(await this.app.vault.adapter.read(path)) as T); }
-      catch { console.warn("[复习中心] 中断的操作记录，读取前一版本", path); }
+      catch { console.warn("[渐进式复习] 中断的操作记录，读取前一版本", path); }
     }
     return [...jobs].map(([id, data]) => ({ id, data }));
   }
 
-  async loadRecord(reviewId: string): Promise<SourceRecord | null> {
+  async loadRecord(reviewId: string, strict = false): Promise<SourceRecord | null> {
     const path = this.recordPath(reviewId);
     if (!(await this.app.vault.adapter.exists(path))) return null;
     try {
       return JSON.parse(await this.app.vault.adapter.read(path)) as SourceRecord;
     } catch (error) {
-      console.error(`[复习中心] 无法读取记录 ${path}`, error);
+      if (strict) throw error;
+      console.error(`[渐进式复习] 无法读取记录 ${path}`, error);
       return null;
     }
   }
@@ -88,15 +89,17 @@ export class ReviewStore {
     if (await this.app.vault.adapter.exists(path)) await this.app.vault.adapter.remove(path);
   }
 
-  async loadAllRecords(): Promise<SourceRecord[]> {
-    const files = await this.listFilesRecursively(this.recordsFolder());
+  async loadAllRecords(onProgress?: (done: number, total: number) => Promise<void>): Promise<SourceRecord[]> {
+    const files = (await this.listFilesRecursively(this.recordsFolder())).filter((file) => file.endsWith(".json"));
     const records: SourceRecord[] = [];
-    for (const path of files.filter((file) => file.endsWith(".json"))) {
+    let done = 0;
+    for (const path of files) {
       try {
         records.push(JSON.parse(await this.app.vault.adapter.read(path)) as SourceRecord);
       } catch (error) {
-        console.error(`[复习中心] 跳过损坏的记录 ${path}`, error);
+        console.error(`[渐进式复习] 跳过损坏的记录 ${path}`, error);
       }
+      await onProgress?.(++done, files.length);
     }
     return records;
   }
@@ -117,15 +120,17 @@ export class ReviewStore {
     });
   }
 
-  async loadAllHistory(): Promise<HistoryEvent[]> {
-    const files = await this.listFilesRecursively(this.historyFolder());
+  async loadAllHistory(onProgress?: (done: number, total: number) => Promise<void>, strict = false): Promise<HistoryEvent[]> {
+    const files = (await this.listFilesRecursively(this.historyFolder())).filter((file) => file.endsWith(".jsonl"));
     const events: HistoryEvent[] = [];
-    for (const path of files.filter((file) => file.endsWith(".jsonl"))) {
+    let done = 0;
+    for (const path of files) {
       let text: string;
       try {
         text = await this.app.vault.adapter.read(path);
       } catch (error) {
-        console.error(`[复习中心] 无法读取历史 ${path}`, error);
+        if (strict) throw error;
+        console.error(`[渐进式复习] 无法读取历史 ${path}`, error);
         continue;
       }
       for (const line of text.split("\n")) {
@@ -134,9 +139,11 @@ export class ReviewStore {
           const event = JSON.parse(line) as HistoryEvent;
           if (event.schemaVersion === 1 && event.eventId) events.push(event);
         } catch (error) {
-          console.error(`[复习中心] 跳过损坏的历史行 ${path}`, error);
+          if (strict) throw new Error(`评分历史尚未完整读取，请等待同步完成后重试：${path}`);
+          console.error(`[渐进式复习] 跳过损坏的历史行 ${path}`, error);
         }
       }
+      await onProgress?.(++done, files.length);
     }
     return deduplicateEvents(events);
   }
@@ -181,7 +188,7 @@ export class ReviewStore {
   async readBackup(path: string): Promise<FullBackup> {
     const normalized = normalizePath(path);
     if (!normalized.startsWith(`${this.exportsFolder()}/`)) {
-      throw new Error("只能从复习中心导出目录恢复备份。");
+      throw new Error("只能从渐进式复习的导出目录恢复备份。");
     }
     return JSON.parse(await this.app.vault.adapter.read(normalized)) as FullBackup;
   }

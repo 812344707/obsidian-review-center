@@ -10,8 +10,10 @@ import type {
   ReviewItem,
   SourceRecord,
 } from "./types";
-import { createId, pathIsInside } from "./utils";
+import { createId, pathIsInside, hashText } from "./utils";
 import { resolveGroup } from "./config";
+import { PreparationTracker, type ProgressReporter } from "./preparation";
+import { verifySource, type VerifiedSource } from "./source-verifier";
 
 interface IdentifiedFile {
   file: TFile;
@@ -22,10 +24,14 @@ export interface ScanResult {
   records: SourceRecord[];
   history: HistoryEvent[];
   conflicts: number;
+  metadataReady?: boolean;
 }
 
 export class VaultScanner {
   private knownRevisions = new Map<string, number>();
+  private pendingMetadata = new Set<string>();
+  private indexedHashes = new Map<string, string>();
+  private verifiedHashes = new Map<string, string>();
 
   constructor(
     private readonly app: App,
@@ -33,19 +39,80 @@ export class VaultScanner {
     private readonly getSettings: () => ReviewCenterSettings,
   ) {}
 
-  async scan(): Promise<ScanResult> {
+  markSourceChanged(path: string): void { this.pendingMetadata.add(path); }
+
+  sourceCreated(path: string): void {
+    // Vault startup emits create for files whose persisted metadata is already loaded.
+    this.pendingMetadata.delete(path);
+    this.indexedHashes.delete(path);
+    this.verifiedHashes.delete(path);
+  }
+
+  markMetadataReady(path: string, markdown: string): void {
+    this.pendingMetadata.delete(path);
+    this.indexedHashes.set(path, hashText(markdown));
+  }
+
+  moveSource(oldPath: string, newPath: string): void {
+    // Obsidian does not emit metadata "changed" for a pure rename.
+    const matches = (path: string) => path === oldPath || path.startsWith(oldPath + "/");
+    for (const hashes of [this.indexedHashes, this.verifiedHashes]) {
+      for (const [path, hash] of [...hashes]) {
+        if (!matches(path)) continue;
+        hashes.delete(path);
+        hashes.set(newPath + path.slice(oldPath.length), hash);
+      }
+    }
+    for (const path of [...this.pendingMetadata]) {
+      if (!matches(path)) continue;
+      this.pendingMetadata.delete(path);
+      this.pendingMetadata.add(newPath + path.slice(oldPath.length));
+    }
+  }
+
+  async verifyEntry(record: SourceRecord, itemId: string): Promise<VerifiedSource> {
+    const result = await verifySource(this.app, this.store, this.getSettings(), record, itemId, (path, markdown) => {
+      const indexed = this.indexedHashes.get(path);
+      if (indexed === hashText(markdown) || this.verifiedHashes.get(path) === hashText(markdown)) {
+        this.pendingMetadata.delete(path); return;
+      }
+      if (this.pendingMetadata.has(path) || (indexed && indexed !== hashText(markdown))) {
+        throw new Error("当前笔记正在保存或更新索引，请稍后重试。");
+      }
+    });
+    if (result.record && result.sourceHash) this.verifiedHashes.set(result.record.sourcePath, result.sourceHash);
+    return result;
+  }
+
+  async loadStored(onProgress?: ProgressReporter): Promise<ScanResult> {
+    const progress = new PreparationTracker(onProgress);
     await this.store.initialize();
-    const history = await this.store.loadAllHistory();
+    const history = await this.store.loadAllHistory((done, total) => progress.step(0, 10, done, total, "读取评分历史"));
+    const loaded = await this.store.loadAllRecords((done, total) => progress.step(10, 20, done, total, "读取复习清单"));
+    const reconciled = reconcileRecordsWithHistory(loaded, history);
+    return { ...reconciled, history };
+  }
+
+  async scan(onProgress?: ProgressReporter): Promise<ScanResult> {
+    const progress = new PreparationTracker(onProgress);
+    await this.store.initialize();
+    const history = await this.store.loadAllHistory((done, total) => progress.step(0, 10, done, total, "读取评分历史"));
     this.knownRevisions = collectLatestRevisions(history);
-    const loaded = await this.store.loadAllRecords();
+    const loaded = await this.store.loadAllRecords((done, total) => progress.step(10, 20, done, total, "读取复习清单"));
+    const snapshots = new Map(loaded.map((record) => [record.reviewId, {
+      signature: recordSignature(record), updatedAt: record.updatedAt,
+    }]));
     const reconciled = reconcileRecordsWithHistory(loaded, history);
     const recordById = new Map(reconciled.records.map((record) => [record.reviewId, record]));
+    const recordByPath = new Map(reconciled.records.map((record) => [record.sourcePath, record]));
     const settings = this.getSettings();
     const allMarkdown = this.app.vault.getMarkdownFiles();
+    const fileByPath = new Map(allMarkdown.map((file) => [file.path, file]));
+    await progress.step(20, 20, 1, 1, "检查笔记和标签");
     // Metadata may lag behind vault events at startup or after a rename. Never
     // infer deletion or mint identities until every Markdown cache is available.
     if (allMarkdown.some((file) => !this.app.metadataCache.getFileCache(file))) {
-      return { records: reconciled.records, history, conflicts: reconciled.conflicts };
+      return { records: reconciled.records, history, conflicts: reconciled.conflicts, metadataReady: false };
     }
     const outsideIdentityPaths = this.collectKnownIdentityPaths(allMarkdown, recordById);
     const watchedFiles = allMarkdown.filter((file) => {
@@ -62,10 +129,12 @@ export class VaultScanner {
       if (id) identityPaths.set(id, [...(identityPaths.get(id) ?? []), file.path]);
     }
     let backedUp = false;
+    let checked = 0;
     for (const file of allMarkdown) {
+      await progress.step(20, 45, ++checked, allMarkdown.length, `检查材料 ${checked}/${allMarkdown.length}`);
       if (pathIsInside(file.path, settings.dataFolder)) continue;
       const known = recordById.get(readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter) ?? "") ??
-        reconciled.records.find((record) => record.sourcePath === file.path);
+        recordByPath.get(file.path);
       const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
       if (!known && !resolveGroup(tags, settings.cardGroups)) continue;
       try {
@@ -105,10 +174,12 @@ export class VaultScanner {
         migrationWarnings.set(file.path, ["复习块迁移未完成，原有进度保留：" + (error instanceof Error ? error.message : String(error))]);
       }
     }
-    const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths);
+    const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths,
+      (done, total) => progress.step(45, 55, done, total, `核对笔记标识 ${done}/${total}`));
     const activeIds = new Set<string>();
     const resultRecords: SourceRecord[] = [];
 
+    let organized = 0;
     for (const entry of identified) {
       const fileEvents: HistoryEvent[] = [];
       const record = await this.scanFile(entry, recordById.get(entry.reviewId), fileEvents, migrationWarnings.get(entry.file.path));
@@ -116,24 +187,27 @@ export class VaultScanner {
       resultRecords.push(record);
       await this.store.appendHistory(fileEvents);
       history.push(...fileEvents);
-      await this.store.saveRecord(record);
+      await this.saveChangedRecord(record, snapshots);
+      await progress.step(55, 95, ++organized, identified.length, `整理材料 ${organized}/${identified.length}`);
     }
 
+    let reconciledCount = 0;
     for (const record of reconciled.records) {
+      await progress.step(95, 99, ++reconciledCount, reconciled.records.length, "核对移出和删除的材料");
       if (activeIds.has(record.reviewId)) continue;
       const outsidePath = outsideIdentityPaths.get(record.reviewId) ??
-        (allMarkdown.some((file) => file.path === record.sourcePath) ? record.sourcePath : undefined);
+        (fileByPath.has(record.sourcePath) ? record.sourcePath : undefined);
       if (outsidePath) {
         record.sourcePath = outsidePath;
         record.sourceTitle = outsidePath.split("/").at(-1)?.replace(/\.md$/i, "") ?? outsidePath;
-        const file = allMarkdown.find((candidate) => candidate.path === outsidePath);
+        const file = fileByPath.get(outsidePath);
         const cache = file && this.app.metadataCache.getFileCache(file);
         record.tags = cache ? (getAllTags(cache) ?? []) : record.tags;
         record.sourceStatus = blockedIdentityPaths.has(outsidePath) ? "parse-error" : "out-of-scope";
         if (migrationWarnings.has(outsidePath)) record.warnings = migrationWarnings.get(outsidePath)!;
         record.updatedAt = new Date().toISOString();
         resultRecords.push(record);
-        await this.store.saveRecord(record);
+        await this.saveChangedRecord(record, snapshots);
       } else {
         const deleteEvents = this.deleteRecordItems(record);
         await this.store.appendHistory(deleteEvents);
@@ -141,6 +215,7 @@ export class VaultScanner {
         await this.store.deleteRecord(record.reviewId);
       }
     }
+    await progress.step(99, 99, 1, 1, "保存复习清单");
 
     return {
       records: resultRecords,
@@ -149,10 +224,20 @@ export class VaultScanner {
     };
   }
 
+  private async saveChangedRecord(record: SourceRecord, snapshots: Map<string, { signature: string; updatedAt: string }>): Promise<void> {
+    const previous = snapshots.get(record.reviewId);
+    if (previous?.signature === recordSignature(record)) {
+      record.updatedAt = previous.updatedAt;
+      return;
+    }
+    await this.store.saveRecord(record);
+  }
+
   private async identifyWatchedFiles(
     files: TFile[],
     records: Map<string, SourceRecord>,
     owners: Map<string, string>,
+    onProgress?: (done: number, total: number) => Promise<void>,
   ): Promise<IdentifiedFile[]> {
     const entries: IdentifiedFile[] = [];
     for (const file of files) {
@@ -163,6 +248,7 @@ export class VaultScanner {
         await this.setReviewId(file, reviewId);
       }
       entries.push({ file, reviewId });
+      await onProgress?.(entries.length, files.length);
     }
 
     const byId = new Map<string, IdentifiedFile[]>();
@@ -436,6 +522,10 @@ export class VaultScanner {
   private knownRevision(sourceId: string, itemId: string): number {
     return this.knownRevisions.get(`${sourceId}::${itemId}`) ?? 0;
   }
+}
+
+function recordSignature(record: SourceRecord): string {
+  return JSON.stringify({ ...record, updatedAt: "" });
 }
 
 function readReviewId(frontmatter: unknown): string | undefined {

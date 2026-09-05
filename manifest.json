@@ -1,7 +1,7 @@
 {
   "id": "review-center",
-  "name": "复习中心",
-  "version": "0.4.2",
+  "name": "渐进式复习",
+  "version": "0.4.3",
   "minAppVersion": "1.13.0",
   "description": "Review notes and flashcards with FSRS scheduling.",
   "author": "wwl",

@@ -23,7 +23,7 @@ function harness(tags = ["note", "card"]) {
   };
   const store = { sessionId: "s", deviceId: "d", initialize: async () => undefined,
     loadAllHistory: async () => structuredClone(history), loadAllRecords: async () => structuredClone([...records.values()]),
-    saveRecord: async (record: SourceRecord) => { records.set(record.reviewId, structuredClone(record)); },
+    saveRecord: vi.fn(async (record: SourceRecord) => { records.set(record.reviewId, structuredClone(record)); }),
     appendHistory: async (events: HistoryEvent[]) => { history.push(...structuredClone(events)); },
     writeBackup: vi.fn(async () => "backup.json"), backupSource: vi.fn(async () => undefined),
     deleteRecord: async (id: string) => { records.delete(id); } };
@@ -32,6 +32,36 @@ function harness(tags = ["note", "card"]) {
 }
 
 describe("tag scanner identity and scope", () => {
+  it("does not rewrite unchanged snapshots or their timestamps on a repeat scan", async () => {
+    const h = harness(); const before = await h.scanner.scan();
+    h.store.saveRecord.mockClear();
+    const result = await h.scanner.scan();
+    expect(h.store.saveRecord).not.toHaveBeenCalled();
+    expect(result.records).toEqual(before.records);
+    expect(result.history).toEqual(before.history);
+    (h.file.cache!.frontmatter as { tags: string[] }).tags = [];
+    await h.scanner.scan();
+    expect(h.store.saveRecord).toHaveBeenCalledOnce();
+    h.store.saveRecord.mockClear();
+    await h.scanner.scan();
+    expect(h.store.saveRecord).not.toHaveBeenCalled();
+  });
+  it("still persists changed cards and progress recovered from history", async () => {
+    const h = harness(); const first = (await h.scanner.scan()).records[0];
+    h.store.saveRecord.mockClear();
+    const after = structuredClone(first.note); after.revision++; after.status = "suspended";
+    h.history.push({ schemaVersion: 1, eventId: "remote-suspend", sessionId: "remote", deviceId: "other", sourceId: first.reviewId,
+      itemId: "note", action: "suspend", occurredAt: new Date().toISOString(), baseRevision: first.note.revision, nextRevision: after.revision, after });
+    const recovered = await h.scanner.scan();
+    expect(recovered.records[0].note.status).toBe("suspended");
+    expect(h.records.get(first.reviewId)?.note).toEqual(after);
+    expect(h.store.saveRecord).toHaveBeenCalledOnce();
+    h.store.saveRecord.mockClear();
+    h.file.content = h.file.content.replace("答:: 答案", "答:: 新答案");
+    const changed = await h.scanner.scan();
+    expect(Object.values(changed.records[0].cards)[0].status).toBe("pending-change");
+    expect(h.store.saveRecord).toHaveBeenCalledOnce();
+  });
   it("reads property and inline tags and only parses cards when their scope matches", async () => {
     const h = harness(["note"]);
     let result = await h.scanner.scan();

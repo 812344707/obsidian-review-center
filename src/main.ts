@@ -33,6 +33,7 @@ import { TagOperationModal } from "./tag-operations";
 import { OperationHistoryModal, type OperationJob } from "./operation-history";
 import { planReschedule, createRescheduleJob, runRescheduleJob } from "./reschedule";
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
+import type { PreparationProgress } from "./preparation";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -45,8 +46,11 @@ export default class ReviewCenterPlugin extends Plugin {
   private overlay!: ReviewOverlay;
   private overlayMode: OverlayMode | null = null;
   private sourceLeaf: WorkspaceLeaf | null = null;
-  private refreshPromise: Promise<void> | null = null;
-  private refreshTimer: number | null = null;
+  private refreshPromise: Promise<boolean> | null = null;
+  preparation: PreparationProgress & { state: "idle" | "running" | "done" | "error" } = { state: "idle", percent: 0, message: "" };
+  materialsDirty = false;
+  private loadPromise: Promise<void> | null = null;
+  private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
   private migrationPromise: Promise<void> | null = null;
   private tickBusy = false;
@@ -73,7 +77,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.addChild(this.overlay);
 
     this.registerView(REVIEW_CENTER_VIEW, (leaf) => new ReviewCenterView(leaf, this));
-    this.addRibbonIcon("brain", "打开复习中心", () => void this.openReviewCenter(true));
+    this.addRibbonIcon("brain", "打开渐进式复习", () => void this.openReviewCenter(true));
     this.registerCommands();
     this.addSettingTab(new ReviewCenterSettingTab(this.app, this));
     this.registerVaultEvents();
@@ -87,7 +91,6 @@ export default class ReviewCenterPlugin extends Plugin {
 
   onunload(): void {
     this.service?.setTimingActive(false);
-    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.overlay?.detach();
     this.optionsWorkspace?.dispose();
     this.optionsWorkspace?.cancelJob?.();
@@ -143,7 +146,8 @@ export default class ReviewCenterPlugin extends Plugin {
     });
     await this.renderOpenViews();
     this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
-    this.scheduleRefresh();
+    this.materialsDirty = true;
+    this.updatePreparationState();
   }
 
   async migrateDataFolder(value: string): Promise<void> {
@@ -161,7 +165,7 @@ export default class ReviewCenterPlugin extends Plugin {
       // Save before switching the store's live path. Failure leaves the old path active.
       await this.saveData({ schemaVersion: 4, settings: next } satisfies StoredPluginData);
       this.settings = next;
-      try { await migration.complete(); } catch (error) { console.warn("[复习中心] 目录已切换，完成标记待重试", error); }
+      try { await migration.complete(); } catch (error) { console.warn("[渐进式复习] 目录已切换，完成标记待重试", error); }
     });
     await this.refreshData();
     new Notice("复习数据已迁移并核对，旧目录保留为备份");
@@ -169,26 +173,42 @@ export default class ReviewCenterPlugin extends Plugin {
 
   async runBulkTags(request: BulkTagRequest, preview: BulkTagPreview[]): Promise<BulkTagResult[]> {
     const result = await this.service.runMaintenance(() => applyBulkTags(this.app, this.settings, request, preview));
-    // Metadata updates can arrive after vault.process; the event handler also refreshes.
+    // The explicit batch action also prepares its resulting materials.
     await this.refreshData();
     return result;
   }
 
-  async refreshData(showNotice = false): Promise<void> {
-    if (this.service?.maintenance) return;
+  async refreshData(showNotice = false): Promise<boolean> {
+    if (this.service?.maintenance) return false;
     if (this.refreshPromise) return this.refreshPromise;
+    this.preparation = { state: "running", percent: 0, message: "准备整理材料" };
+    this.updatePreparationState();
     this.refreshPromise = this.ensureMigrated()
-      .then(() => this.service.refresh())
-      .then(() => {
-        if (showNotice) new Notice("复习中心已重新扫描");
+      .then(() => this.service.refresh((progress) => {
+        this.preparation = { ...progress, state: "running" };
+        this.updatePreparationState();
+      }))
+      .then(async (ready) => {
+        if (!ready) throw new Error("笔记索引尚未就绪，请稍后再次整理材料。");
+        await this.store.flush();
+        this.materialsDirty = false;
+        this.preparation = { state: "done", percent: 100, message: "材料整理完成" };
+        if (showNotice) new Notice("材料整理完成，复习进度已保留。");
+        return true;
       })
       .catch((error: unknown) => {
-        console.error("[复习中心] 扫描失败", error);
-        new Notice(`复习中心扫描失败：${errorMessage(error)}`);
+        this.materialsDirty = true;
+        this.preparation = { ...this.preparation, state: "error", message: `整理未完成：${errorMessage(error)}` };
+        console.error("[渐进式复习] 扫描失败", error);
+        new Notice(`渐进式复习扫描失败：${errorMessage(error)}`);
+        return false;
       })
       .finally(() => {
         this.refreshPromise = null;
-        void this.renderOpenViews();
+        this.updatePreparationState();
+        // Starting a review will render its destination. Rebuilding the entire
+        // home tree here delays opening the first note/card in large vaults.
+        if (!this.startingReview) void this.renderOpenViews();
       });
     return this.refreshPromise;
   }
@@ -214,10 +234,16 @@ export default class ReviewCenterPlugin extends Plugin {
     if (leaf.view instanceof ReviewCenterView) await leaf.view.render();
   }
 
-  async startReview(mode: ReviewMode, extra = false, groupId?: string, tagPath?: string): Promise<void> {
-    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
-    await this.refreshData();
-    const entry = this.service.startOrResumeSession(mode, extra, groupId, tagPath);
+  get startingReview(): boolean { return this.startPromise !== null; }
+
+  startReview(mode: ReviewMode, extra = false, groupId?: string, tagPath?: string): Promise<void> {
+    return this.runReviewStart(() => this.performStartReview(mode, extra, groupId, tagPath));
+  }
+
+  private async performStartReview(mode: ReviewMode, extra: boolean, groupId?: string, tagPath?: string): Promise<void> {
+    if (!await this.ensureReviewData()) return;
+    this.service.startOrResumeSession(mode, extra, groupId, tagPath);
+    const entry = await this.service.prepareCurrent();
     if (!entry && !this.service.currentPendingChange()) {
       new Notice("当前没有可复习内容");
       await this.openReviewCenter(true);
@@ -229,19 +255,70 @@ export default class ReviewCenterPlugin extends Plugin {
     this.service.setTimingActive(!document.hidden);
   }
 
-  async continueReview(): Promise<void> {
-    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
-    await this.refreshData();
+  continueReview(): Promise<void> {
+    return this.runReviewStart(() => this.performContinueReview());
+  }
+
+  private async performContinueReview(): Promise<void> {
+    if (!await this.ensureReviewData()) return;
     this.service.requeueDue();
     const session = this.service.session;
     if (!session) {
       await this.openReviewCenter(true);
       return;
     }
+    await this.service.prepareCurrent();
     this.showDashboard = false;
     if (session.mode === "note") await this.openActiveNote();
     else await this.openReviewCenter(false);
     this.service.setTimingActive(!document.hidden);
+  }
+
+  private runReviewStart(operation: () => Promise<void>): Promise<void> {
+    if (this.startPromise) return this.startPromise;
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return Promise.resolve(); }
+    this.startPromise = Promise.resolve().then(operation).catch((error: unknown) => {
+      console.error("[渐进式复习] 开始复习失败", error);
+      new Notice(`无法开始复习：${errorMessage(error)}`);
+    }).finally(() => {
+      this.startPromise = null;
+      if (this.showDashboard) void this.renderOpenViews();
+      else this.updateStartState();
+    });
+    this.updateStartState();
+    return this.startPromise;
+  }
+
+  private updateStartState(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW)) {
+      if (leaf.view instanceof ReviewCenterView) leaf.view.updateStartState();
+    }
+  }
+
+  private updatePreparationState(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW)) {
+      if (leaf.view instanceof ReviewCenterView) leaf.view.updatePreparationState();
+    }
+  }
+
+  private ensureLoaded(): Promise<void> {
+    if (this.service.hasLoaded) return Promise.resolve();
+    if (!this.loadPromise) this.loadPromise = this.ensureMigrated().then(() => this.service.loadStored())
+      .finally(() => { this.loadPromise = null; });
+    return this.loadPromise;
+  }
+
+  private async ensureReviewData(): Promise<boolean> {
+    // Starting reads the saved list. Only the explicit preparation action scans the vault.
+    if (this.refreshPromise && !await this.refreshPromise) return false;
+    await this.ensureLoaded();
+    if (!this.service.records.length) {
+      new Notice("请先在主页点击“整理材料”，建立复习清单。");
+      await this.openReviewCenter(true);
+      return false;
+    }
+    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return false; }
+    return this.service.hasLoaded;
   }
 
   async openCardSource(entry: QueueEntry, edit: boolean): Promise<void> {
@@ -287,7 +364,8 @@ export default class ReviewCenterPlugin extends Plugin {
 
   async undoActiveNote(): Promise<void> {
     if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
-    await this.service.undoLast();
+    try { await this.service.undoLast(); }
+    catch (error) { new Notice(errorMessage(error)); }
     await this.openActiveNote();
   }
 
@@ -295,7 +373,8 @@ export default class ReviewCenterPlugin extends Plugin {
     if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
     if (this.overlayMode !== "note") return;
     this.overlay.detach();
-    await this.service.gradeCurrent(rating);
+    try { await this.service.gradeCurrent(rating); }
+    catch (error) { new Notice(errorMessage(error)); }
     const next = this.service.currentEntry();
     if (next) await this.openActiveNote();
     else await this.openReviewCenter(false);
@@ -306,7 +385,8 @@ export default class ReviewCenterPlugin extends Plugin {
     this.rememberActiveSourceLeaf();
     this.overlay.detach();
     this.overlayMode = null;
-    await this.refreshData();
+    try { await this.service.prepareCurrent(); }
+    catch (error) { new Notice(errorMessage(error)); }
     await this.openReviewCenter(false);
     const pending = this.service.pendingChanges(sourceId);
     if (pending.length > 0) {
@@ -336,13 +416,14 @@ export default class ReviewCenterPlugin extends Plugin {
       }
       await this.openReviewCenter(true);
     } catch (error) {
-      console.error("[复习中心] 恢复失败", error);
+      console.error("[渐进式复习] 恢复失败", error);
       new Notice(`恢复失败：${errorMessage(error)}`);
     }
   }
 
   private async initializeAfterLayout(): Promise<void> {
-    await this.refreshData();
+    try { await this.ensureLoaded(); await this.renderOpenViews(); }
+    catch (error) { new Notice(`读取复习清单失败：${errorMessage(error)}`); }
     for (const { id, data } of await this.store.loadJobs<OperationJob>()) {
       if (data.kind === "reschedule" && data.state === "pending") {
         try { await runRescheduleJob(this, id, data); }
@@ -357,7 +438,9 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async openActiveNote(): Promise<void> {
-    const entry = this.service.currentEntry();
+    let entry: QueueEntry | null;
+    try { entry = await this.service.prepareCurrent(); }
+    catch (error) { new Notice(errorMessage(error)); await this.openReviewCenter(true); return; }
     if (!entry) {
       await this.openReviewCenter(false);
       return;
@@ -365,7 +448,6 @@ export default class ReviewCenterPlugin extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(entry.sourcePath);
     if (!(file instanceof TFile)) {
       new Notice("来源笔记不存在，已跳过");
-      await this.refreshData();
       await this.openReviewCenter(false);
       return;
     }
@@ -380,6 +462,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private registerCommands(): void {
+    this.addCommand({ id: "organize-materials", name: "整理材料", callback: () => void this.refreshData(true) });
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
     this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
     this.addCommand({ id: "insert-review-callout", name: "插入复习折叠块", editorCallback: (editor) => {
@@ -416,7 +499,7 @@ export default class ReviewCenterPlugin extends Plugin {
         const available = this.service.canUndo();
         if (!checking && available) {
           if (this.service.session?.mode === "note") void this.undoActiveNote();
-          else void this.service.undoLast().then(() => this.renderOpenViews());
+          else void this.service.undoLast().catch((error) => new Notice(errorMessage(error))).then(() => this.renderOpenViews());
         }
         return available;
       },
@@ -482,7 +565,7 @@ export default class ReviewCenterPlugin extends Plugin {
       await this.app.workspace.revealLeaf(leaf);
       return await this.resolveOpenedSourceLeaf(file, leaf);
     } catch (error) {
-      console.warn("[复习中心] 原文标签页已失效，正在重新创建", error);
+      console.warn("[渐进式复习] 原文标签页已失效，正在重新创建", error);
       this.sourceLeaf = null;
       leaf = this.app.workspace.getLeaf("tab");
       this.sourceLeaf = leaf;
@@ -572,17 +655,28 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private registerVaultEvents(): void {
-    this.registerEvent(this.app.vault.on("create", (file) => this.onVaultFileChanged(file.path)));
+    this.registerEvent(this.app.vault.on("create", (file) => {
+      if (!file.path.toLowerCase().endsWith(".md") || pathIsInside(file.path, this.settings.dataFolder)) return;
+      this.service.sourceCreated(file.path);
+      // Startup re-announces existing files; it should not ask for preparation on every launch.
+      if (this.service.hasLoaded && !this.service.records.some((record) => record.sourcePath === file.path)) {
+        this.materialsDirty = true;
+        this.updatePreparationState();
+      }
+    }));
     this.registerEvent(this.app.vault.on("delete", (file) => this.onVaultFileChanged(file.path)));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        this.onVaultFileChanged(oldPath);
-        this.onVaultFileChanged(file.path);
+        if (pathIsInside(oldPath, this.settings.dataFolder) && pathIsInside(file.path, this.settings.dataFolder)) return;
+        this.service.sourceRenamed(oldPath, file.path);
+        this.materialsDirty = true;
+        this.updatePreparationState();
       }),
     );
     this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultFileChanged(file.path)));
-    this.registerEvent(this.app.metadataCache.on("changed", (file) => this.onVaultFileChanged(file.path)));
-    this.registerEvent(this.app.metadataCache.on("resolved", () => this.scheduleRefresh()));
+    this.registerEvent(this.app.metadataCache.on("changed", (file, markdown) => {
+      this.service.metadataReady(file.path, markdown);
+    }));
   }
 
   private registerWorkspaceEvents(): void {
@@ -612,16 +706,9 @@ export default class ReviewCenterPlugin extends Plugin {
   private onVaultFileChanged(path: string): void {
     if (!path.toLowerCase().endsWith(".md")) return;
     if (pathIsInside(path, this.settings.dataFolder)) return;
-    this.scheduleRefresh();
-  }
-
-  private scheduleRefresh(): void {
-    if (this.service?.maintenance) return;
-    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
-    this.refreshTimer = window.setTimeout(() => {
-      this.refreshTimer = null;
-      void this.refreshData();
-    }, 1200);
+    this.service.sourceChanged(path);
+    this.materialsDirty = true;
+    this.updatePreparationState();
   }
 
   private async renderOpenViews(): Promise<void> {

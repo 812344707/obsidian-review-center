@@ -30,7 +30,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     this.clean();
     const root = this.containerEl;
     root.empty(); root.addClass("review-center-settings");
-    const tabs = root.createDiv({ cls: "review-settings-tabs", attr: { role: "tablist", "aria-label": "复习中心设置分类" } });
+    const tabs = root.createDiv({ cls: "review-settings-tabs", attr: { role: "tablist", "aria-label": "渐进式复习设置分类" } });
     TABS.forEach(([id, label], index) => {
       const button = tabs.createEl("button", { text: label, cls: this.page === id ? "is-active" : "", attr: {
         type: "button", role: "tab", id: "review-settings-tab-" + id, "aria-selected": String(this.page === id),
@@ -121,7 +121,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     for (const [key, name, desc] of [
       ["showNoteHeatmap", "笔记热力图", "在统计页显示每天给笔记评分的次数。"],
       ["showCardHeatmap", "卡片热力图", "在统计页显示每天给卡片评分的次数。"],
-      ["autoOpenDashboard", "启动时打开复习中心", "打开知识库后自动显示复习首页。"],
+      ["autoOpenDashboard", "启动时打开渐进式复习", "打开知识库后自动显示复习首页。"],
     ] as const) {
       new Setting(root).setName(name).setDesc(desc).addToggle((t) => t.setValue(this.displayDraft![key])
         .onChange((v) => { this.displayDraft![key] = v; }));

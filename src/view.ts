@@ -48,11 +48,42 @@ export class ReviewCenterView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "复习中心";
+    return "渐进式复习";
   }
 
   getIcon(): string {
     return "brain";
+  }
+
+  updateStartState(): void {
+    for (const button of Array.from(this.contentEl.querySelectorAll<HTMLButtonElement>("button[data-review-start]"))) {
+      button.textContent = this.plugin.startingReview ? "正在准备…" : "开始";
+      button.disabled = this.plugin.startingReview || this.plugin.preparation.state === "running" || button.dataset.reviewStart !== "ready" || this.plugin.service.maintenance;
+      button.setAttribute("aria-busy", String(this.plugin.startingReview));
+    }
+  }
+
+  updatePreparationState(): void {
+    const progress = this.plugin.preparation;
+    const button = this.contentEl.querySelector<HTMLButtonElement>("[data-organize-materials]");
+    if (button) {
+      button.disabled = progress.state === "running" || this.plugin.startingReview || this.plugin.service.maintenance;
+      button.setAttribute("aria-busy", String(progress.state === "running"));
+    }
+    const status = this.contentEl.querySelector<HTMLElement>(".review-materials-status");
+    if (status) {
+      const active = progress.state !== "idle" && !(progress.state === "done" && this.plugin.materialsDirty);
+      const label = status.querySelector<HTMLElement>(".review-materials-label")!;
+      label.textContent = active ? progress.message : this.plugin.materialsDirty ? "材料有变化，可点击整理材料更新清单" :
+        this.plugin.service.records.length ? "平时直接开始，新增或修改材料后可在这里整理" : "首次使用，请点击整理材料建立复习清单";
+      const percentage = status.querySelector<HTMLElement>(".review-materials-percent")!;
+      percentage.textContent = active ? `${progress.percent}%` : "";
+      const bar = status.querySelector<HTMLProgressElement>("progress")!;
+      bar.hidden = !active;
+      bar.value = progress.percent;
+      status.classList.toggle("is-error", progress.state === "error");
+    }
+    this.updateStartState();
   }
 
   async onOpen(): Promise<void> {
@@ -69,6 +100,12 @@ export class ReviewCenterView extends ItemView {
   async render(): Promise<void> {
     const version = ++this.renderVersion;
     const container = this.contentEl;
+    let verificationError = "";
+    if (!this.plugin.showDashboard && this.plugin.service.session && !this.plugin.service.restoringSession) {
+      try { await this.plugin.service.prepareCurrent(); }
+      catch (error) { verificationError = error instanceof Error ? error.message : String(error); }
+      if (version !== this.renderVersion) return;
+    }
     const scroll = container.querySelector<HTMLElement>(".review-tree-scroll");
     if (scroll) { this.homeScroll = scroll.scrollTop; this.saveHome(); }
     if (container.hasClass("is-statistics")) this.statsScroll = container.scrollTop;
@@ -77,7 +114,13 @@ export class ReviewCenterView extends ItemView {
     container.removeClass("is-tree-home");
     container.removeClass("is-statistics");
     container.addClass("review-center-view");
-    if (this.plugin.service.restoringSession) {
+    if (verificationError) {
+      container.createEl("p", { text: verificationError, attr: { role: "status" } });
+      container.createEl("button", { text: "重试" }).onclick = () => void this.render();
+      container.createEl("button", { text: "返回主页" }).onclick = () => void this.plugin.openReviewCenter(true);
+      return;
+    }
+    if (this.plugin.service.restoringSession && !this.plugin.showDashboard) {
       container.createEl("p", { text: "正在读取复习进度…", attr: { role: "status" } });
       return;
     }
@@ -124,11 +167,18 @@ export class ReviewCenterView extends ItemView {
     actions.createEl("button", { text: "统计", attr: { "aria-label": "查看复习统计" } }).onclick = () => this.showPage("stats");
     const start = actions.createEl("button", { cls: "mod-cta", text: "开始" });
     const count = selected ? this.plugin.service.counts(this.homeMode, selected.groupId, selected.tagPath) : null;
-    start.disabled = !count || count.due + count.new === 0 || this.plugin.service.maintenance;
+    start.dataset.reviewStart = count && count.due + count.new > 0 ? "ready" : "empty";
+    this.updateStartState();
     start.onclick = () => { if (selected) void this.plugin.startReview(this.homeMode, false, selected.groupId, selected.tagPath); };
-    const refresh = actions.createEl("button", { cls: "review-center-icon-button", attr: { "aria-label": "刷新复习内容" } });
-    setIcon(refresh, "refresh-cw"); refresh.onclick = () => { refresh.disabled = true; void this.plugin.refreshData(true); };
+    const organize = actions.createEl("button", { text: "整理材料", attr: { "data-organize-materials": "", "aria-label": "整理材料并更新复习队列" } });
+    organize.onclick = () => void this.plugin.refreshData(true);
     actions.createEl("button", { text: "设置", attr: { "aria-label": "打开插件设置" } }).onclick = () => this.plugin.openPluginSettings();
+    const materialStatus = container.createDiv({ cls: "review-materials-status", attr: { role: "status", "aria-live": "polite" } });
+    const materialLabel = materialStatus.createDiv({ cls: "review-materials-heading" });
+    materialLabel.createSpan({ cls: "review-materials-label" });
+    materialLabel.createSpan({ cls: "review-materials-percent" });
+    materialStatus.createEl("progress", { attr: { max: "100", value: "0", "aria-label": "材料整理进度" } });
+    this.updatePreparationState();
     const issues = this.plugin.service.pendingChanges().length;
     const warnings = this.plugin.service.records.reduce((n, r) => n + r.warnings.length, 0);
     if (issues || warnings) {
@@ -167,7 +217,7 @@ export class ReviewCenterView extends ItemView {
     nodes.forEach((node) => add(node, 0));
     if (!nodes.length || !groupsFor(this.plugin.settings, this.homeMode).some((g) => g.tags.length)) {
       const empty = table.createDiv({ cls: "review-tree-empty" });
-      empty.createEl("p", { text: "先为复习组选择标签，内容会自动出现在这里。" });
+      empty.createEl("p", { text: "先为复习组选择标签，再点击整理材料。" });
       empty.createEl("button", { text: "设置复习组" }).onclick = () => this.plugin.openPluginSettings();
     }
     const foot = container.createDiv({ cls: "review-tree-footer" });
@@ -246,7 +296,8 @@ export class ReviewCenterView extends ItemView {
     undo.disabled = !this.plugin.service.canUndo();
     undo.addEventListener("click", () => {
       void (async () => {
-        await this.plugin.service.undoLast();
+        try { await this.plugin.service.undoLast(); }
+        catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
         if (this.plugin.service.session?.mode === "note") await this.plugin.continueReview();
         else await this.render();
       })();
@@ -264,7 +315,8 @@ export class ReviewCenterView extends ItemView {
         if (this.plugin.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
         void (async () => {
           for (const sibling of Array.from(row.querySelectorAll("button"))) sibling.disabled = true;
-          await this.plugin.service.gradeCurrent(grade);
+          try { await this.plugin.service.gradeCurrent(grade); }
+          catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
           await this.render();
         })();
       });
@@ -287,13 +339,14 @@ export class ReviewCenterView extends ItemView {
     undo.disabled = !this.plugin.service.canUndo();
     undo.addEventListener("click", () => {
       void (async () => {
-        await this.plugin.service.undoLast();
+        try { await this.plugin.service.undoLast(); }
+        catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
         if (this.plugin.service.session?.mode === "note") await this.plugin.continueReview();
         else await this.render();
       })();
     });
     done
-      .createEl("button", { cls: "mod-cta", text: "返回复习中心" })
+      .createEl("button", { cls: "mod-cta", text: "返回渐进式复习" })
       .addEventListener("click", () => {
         this.plugin.service.finishSession();
         this.plugin.showDashboard = true;

@@ -7,6 +7,7 @@ vi.mock("obsidian", () => ({
   normalizePath: (value: string) => value,
 }));
 
+import { fixtureVerifier } from "./fixtures";
 import { ReviewService } from "../src/service";
 import { createSchedule } from "../src/scheduler";
 import type { VaultScanner } from "../src/scanner";
@@ -65,7 +66,7 @@ describe("ReviewService session state", () => {
   let record: SourceRecord;
   let events: HistoryEvent[];
   let savedSession: ReviewSession | null;
-  let scanner: { scan: ReturnType<typeof vi.fn> };
+  let scanner: { scan: ReturnType<typeof vi.fn> } & Pick<VaultScanner, "verifyEntry">;
   let store: {
     sessionId: string;
     deviceId: string;
@@ -78,6 +79,7 @@ describe("ReviewService session state", () => {
     events = [];
     savedSession = null;
     scanner = {
+      ...fixtureVerifier(() => events),
       scan: vi.fn(async () => ({ records: [record], history: events, conflicts: 0 })),
     };
     store = {

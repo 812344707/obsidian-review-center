@@ -4,7 +4,7 @@ import { ReviewService } from "../src/service";
 import type { VaultScanner } from "../src/scanner";
 import type { ReviewStore } from "../src/storage";
 import type { HistoryEvent, ReviewSession } from "../src/types";
-import { fixtureRecord, fixtureSettings, today } from "./fixtures";
+import { fixtureRecord, fixtureSettings, today, fixtureVerifier } from "./fixtures";
 import { effectiveReviews } from "../src/activity";
 
 function harness() {
@@ -16,7 +16,7 @@ function harness() {
   let session: ReviewSession | null = null;
   const store = { sessionId: "test", deviceId: "desktop", appendHistory: vi.fn(async (events: HistoryEvent[]) => { history.push(...structuredClone(events)); }),
     saveRecord: vi.fn(async () => undefined) };
-  const scanner = { scan: async () => ({ records: structuredClone(records), history: structuredClone(history), conflicts: 0 }) };
+  const scanner = { ...fixtureVerifier(() => history), scan: async () => ({ records: structuredClone(records), history: structuredClone(history), conflicts: 0 }) };
   const make = () => new ReviewService(scanner as VaultScanner, store as unknown as ReviewStore, () => settings, "0.2.0", (value) => { session = value; });
   const service = make(); service.records = records;
   return { service, records, history, store, settings, make, session: () => session };

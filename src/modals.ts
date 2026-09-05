@@ -63,10 +63,16 @@ export class ChangedCardsModal extends Modal {
           itemId: item.id,
           reset: this.choices.get(`${record.reviewId}::${item.id}`) ?? false,
         }));
-        await this.service.resolveChanges(choices);
-        new Notice(`已处理 ${choices.length} 张修改卡片`);
-        this.close();
-        this.onDone();
+        try {
+          await this.service.resolveChanges(choices);
+          new Notice(`已处理 ${choices.length} 张修改卡片`);
+          this.close();
+          this.onDone();
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : "处理未完成，请重试。");
+          this.choices.clear();
+          this.render();
+        }
       })();
     });
   }

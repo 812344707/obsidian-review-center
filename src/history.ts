@@ -98,6 +98,11 @@ export function resolveItemHistory(
     item = chosen.after ? cloneValue(chosen.after) : null;
     revision = chosen.nextRevision;
   }
+  // Sync can deliver the source snapshot before the corresponding history file.
+  // An incomplete older event chain must never roll that progress backwards.
+  if (fallback && fallback.revision > revision) {
+    return { item: fallback, revision: fallback.revision, conflicts };
+  }
   return { item, revision, conflicts };
 }
 

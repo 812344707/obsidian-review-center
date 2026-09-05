@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("obsidian", () => ({ TFile: class {}, normalizePath: (v: string) => v, getAllTags: () => [] }));
 import { ReviewService } from "../src/service";
 import { planReschedule } from "../src/reschedule";
-import { fixtureItem, fixtureRecord, fixtureSettings, reviewEvent, today } from "./fixtures";
+import { fixtureItem, fixtureRecord, fixtureSettings, reviewEvent, today, fixtureVerifier } from "./fixtures";
 import type { ReviewStore } from "../src/storage";
 import type { VaultScanner } from "../src/scanner";
 import type { HistoryEvent } from "../src/types";
@@ -12,7 +12,7 @@ describe("sibling bury and rescheduling", () => {
   it("records visible review time and excludes a paused session's time away", async () => {
     const settings = fixtureSettings();
     const store = { sessionId: "s", deviceId: "d", appendHistory: vi.fn(), saveRecord: vi.fn() };
-    const service = new ReviewService({} as VaultScanner, store as unknown as ReviewStore, () => settings, "0.4", () => {});
+    const service: ReviewService = new ReviewService(fixtureVerifier(() => service.history) as VaultScanner, store as unknown as ReviewStore, () => settings, "0.4", () => {});
     service.records = [fixtureRecord()]; service.startSession("card");
     const before = structuredClone(service.currentEntry()!.item.schedule);
     vi.advanceTimersByTime(2000); service.setTimingActive(false); vi.advanceTimersByTime(600000); service.setTimingActive(true); vi.advanceTimersByTime(3000);
@@ -26,7 +26,7 @@ describe("sibling bury and rescheduling", () => {
     for (const [item, index] of [[first, 1], [sibling, 2], [other, 1]] as const) { item.kind = "cloze"; item.blockId = item.id.split(":")[0]; item.clozeIndex = index; }
     const record = fixtureRecord(); record.cards = Object.fromEntries([first, sibling, other].map((i) => [i.id, i]));
     const history: HistoryEvent[] = [], store = { sessionId: "s", deviceId: "d", appendHistory: vi.fn(async (e) => history.push(...structuredClone(e))), saveRecord: vi.fn() };
-    const service = new ReviewService({} as VaultScanner, store as unknown as ReviewStore, () => s, "0.4", () => {}); service.records = [record]; service.history = [];
+    const service: ReviewService = new ReviewService(fixtureVerifier(() => service.history) as VaultScanner, store as unknown as ReviewStore, () => s, "0.4", () => {}); service.records = [record]; service.history = [];
     const before = structuredClone(sibling.schedule); service.startSession("card"); await service.gradeCurrent(3);
     expect(record.cards[sibling.id]).toMatchObject({ buriedUntil: "2026-09-04" }); expect(record.cards[sibling.id].schedule).toEqual(before);
     expect(record.cards[other.id].buriedUntil).toBeUndefined(); expect(history.map((e) => e.action)).toEqual(["review", "bury"]);
@@ -36,7 +36,7 @@ describe("sibling bury and rescheduling", () => {
     for (const action of ["tag", "suspend"] as const) {
       const s = fixtureSettings(); const p = s.cardGroups[0].parameters; p.leechThreshold = 1; p.leechAction = action;
       const record = fixtureRecord("source", ["card"], fixtureItem("rv-one:qa", false)), history: HistoryEvent[] = [], store = { sessionId: "s", deviceId: "d", appendHistory: async (e: HistoryEvent[]) => history.push(...e), saveRecord: vi.fn() };
-      const service = new ReviewService({} as VaultScanner, store as unknown as ReviewStore, () => s, "0.4", () => {}); service.records = [record]; service.history = [];
+      const service: ReviewService = new ReviewService(fixtureVerifier(() => service.history) as VaultScanner, store as unknown as ReviewStore, () => s, "0.4", () => {}); service.records = [record]; service.history = [];
       service.startSession("card"); await service.gradeCurrent(1);
       expect(record.cards["rv-one:qa"].leech).toBe(true); expect(record.cards["rv-one:qa"].status).toBe(action === "suspend" ? "suspended" : "active");
     }
