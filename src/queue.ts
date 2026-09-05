@@ -4,6 +4,42 @@ import { groupsFor, resolveGroup, nodeParameters, parameterPath, tagsMatch, tagM
 import { effectiveReviews, eventMode } from "./activity";
 import { hashText, itemKey, localDayKey } from "./utils";
 
+export interface DailyQueuePreparation {
+  mode: ReviewMode;
+  day: string;
+  entries: QueueEntry[];
+  allGroups: ReturnType<typeof groupsFor>;
+  groupRank: Map<string, number>;
+  recordMap: Map<string, SourceRecord>;
+  reviewed: Set<string>;
+  firstReviews: HistoryEvent[];
+}
+
+export function prepareDailyQueue(
+  records: SourceRecord[], history: HistoryEvent[], settings: ReviewCenterSettings, mode: ReviewMode, now = new Date(),
+): DailyQueuePreparation {
+  const allGroups = groupsFor(settings, mode);
+  const reviewed = new Set<string>();
+  const reviews = effectiveReviews(history).filter((event) => eventMode(event) === mode &&
+    localDayKey(new Date(event.occurredAt)) === localDayKey(now));
+  const firstReviews = reviews.filter((event) => {
+    const key = itemKey(event.sourceId, event.itemId);
+    if (reviewed.has(key)) return false;
+    reviewed.add(key);
+    return true;
+  });
+  return {
+    mode,
+    day: localDayKey(now),
+    entries: collectEntries(records, mode, settings).filter((entry) => !isBuried(entry, now)),
+    allGroups,
+    groupRank: new Map(allGroups.map((group, index) => [group.id, index])),
+    recordMap: new Map(records.map((record) => [record.reviewId, record])),
+    reviewed,
+    firstReviews,
+  };
+}
+
 export function collectEntries(records: SourceRecord[], mode: ReviewMode, settings: ReviewCenterSettings, groupId?: string, tagPath?: string): QueueEntry[] {
   const entries: QueueEntry[] = [];
   for (const record of records) {
@@ -23,14 +59,12 @@ export function collectEntries(records: SourceRecord[], mode: ReviewMode, settin
 export function isLearning(entry: QueueEntry): boolean { return [1, 3].includes(entry.item.schedule.state); }
 export function isBuried(entry: QueueEntry, now: Date): boolean { return !!entry.item.buriedUntil && entry.item.buriedUntil > localDayKey(now); }
 export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[], settings: ReviewCenterSettings,
-  mode: ReviewMode, now = new Date(), extra = false, groupId?: string, tagPath?: string, seed = localDayKey(now)): QueueEntry[] {
-  const entries = collectEntries(records, mode, settings, groupId, tagPath).filter((e) => !isBuried(e, now));
-  const allGroups = groupsFor(settings, mode);
-  const groupRank = new Map(allGroups.map((g, i) => [g.id, i]));
-  const recordMap = new Map(records.map((r) => [r.reviewId, r]));
-  const reviewed = new Set<string>();
-  const reviews = effectiveReviews(history).filter((e) => eventMode(e) === mode && localDayKey(new Date(e.occurredAt)) === localDayKey(now));
-  const firstReviews = reviews.filter((e) => { const key = itemKey(e.sourceId, e.itemId); if (reviewed.has(key)) return false; reviewed.add(key); return true; });
+  mode: ReviewMode, now = new Date(), extra = false, groupId?: string, tagPath?: string, seed = localDayKey(now),
+  prepared?: DailyQueuePreparation): QueueEntry[] {
+  const context = prepared?.mode === mode && prepared.day === localDayKey(now)
+    ? prepared : prepareDailyQueue(records, history, settings, mode, now);
+  const entries = context.entries.filter((entry) => (!groupId || entry.group.id === groupId) && tagsMatch(entry.tags, tagPath));
+  const { allGroups, groupRank, recordMap, reviewed, firstReviews } = context;
   const result: QueueEntry[] = [];
   for (const group of allGroups.filter((g) => !groupId || g.id === groupId)) {
     const order = nodeParameters(settings, mode, group, tagPath ?? "", now).parameters;
@@ -99,8 +133,8 @@ function combine(a: QueueEntry[], b: QueueEntry[], order: "before" | "mixed" | "
   const out: QueueEntry[] = []; for (let i = 0; i < Math.max(a.length, b.length); i++) { if (b[i]) out.push(b[i]); if (a[i]) out.push(a[i]); } return out;
 }
 export function getQueueCounts(records: SourceRecord[], history: HistoryEvent[], settings: ReviewCenterSettings,
-  mode: ReviewMode, now = new Date(), groupId?: string, tagPath?: string): QueueCounts {
-  const queue = buildDailyQueue(records, history, settings, mode, now, false, groupId, tagPath);
+  mode: ReviewMode, now = new Date(), groupId?: string, tagPath?: string, prepared?: DailyQueuePreparation): QueueCounts {
+  const queue = buildDailyQueue(records, history, settings, mode, now, false, groupId, tagPath, localDayKey(now), prepared);
   const scoped = records.filter((r) => { const g = resolveGroup(r.tags, groupsFor(settings, mode), r.sourcePath); return g && (!groupId || g.id === groupId) && tagsMatch(r.tags, tagPath); });
   const items = scoped.flatMap((r) => mode === "note" ? [r.note] : Object.values(r.cards));
   return { due: queue.filter((e) => !e.isNew).length, learning: queue.filter(isLearning).length, review: queue.filter((e) => !e.isNew && !isLearning(e)).length,

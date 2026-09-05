@@ -35,7 +35,7 @@ import { planReschedule, createRescheduleJob, runRescheduleJob } from "./resched
 import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 import type { PreparationProgress } from "./preparation";
 import { cardAuthoringEdit, type CardAuthoringAction } from "./card-authoring";
-import { parseReviewCallouts } from "./parser";
+import { parseReviewCards } from "./parser";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -143,6 +143,7 @@ export default class ReviewCenterPlugin extends Plugin {
     const normalized = normalizeSettings(next);
     await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
     this.settings = normalized;
+    this.service.settingsChanged();
   }
   async saveReviewOptions(next: ReviewCenterSettings): Promise<void> {
     const normalized = normalizeSettings(next), planned = planReschedule(this.service.records, this.service.history, this.settings, normalized);
@@ -162,6 +163,7 @@ export default class ReviewCenterPlugin extends Plugin {
     await this.service.runMaintenance(async () => {
       await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
       this.settings = normalized;
+      this.service.settingsChanged();
     });
     await this.renderOpenViews();
     this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
@@ -240,6 +242,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.overlay.detach();
     const workspace = this.app.workspace;
     let leaf = workspace.getLeavesOfType(REVIEW_CENTER_VIEW)[0];
+    let created = false;
     if (!leaf) {
       workspace.iterateAllLeaves((candidate) => {
         if (!leaf && candidate.getViewState().type === REVIEW_CENTER_VIEW) leaf = candidate;
@@ -247,10 +250,13 @@ export default class ReviewCenterPlugin extends Plugin {
     }
     if (!leaf) {
       leaf = workspace.getLeaf(false);
+      created = true;
       await leaf.setViewState({ type: REVIEW_CENTER_VIEW, active: true });
     }
     await workspace.revealLeaf(leaf);
-    if (leaf.view instanceof ReviewCenterView) await leaf.view.render();
+    // A newly attached view renders in onOpen. Rendering it again here would
+    // repeat current-source and history verification before the first card.
+    if (!created && leaf.view instanceof ReviewCenterView) await leaf.view.render();
   }
 
   get startingReview(): boolean { return this.startPromise !== null; }
@@ -273,6 +279,10 @@ export default class ReviewCenterPlugin extends Plugin {
       } else { from = to = Math.min(from, markdown.length); }
     }
     this.authorSelection = { path: view.file.path, markdown, from, to };
+  }
+
+  chooseCardTemplate(): void {
+    new CardTemplateModal(this).open();
   }
 
   async authorCurrentNote(action: CardAuthoringAction): Promise<void> {
@@ -303,7 +313,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.authoringTimers.set(path, window.setTimeout(() => {
       this.authoringTimers.delete(path);
       if (this.authoringFiles.get(path) !== version) return;
-      const parsed = parseReviewCallouts(markdown);
+      const parsed = parseReviewCards(markdown);
       if (!parsed.valid || !parsed.cards.length) return;
       void this.service.refreshSource(path).then(() => {
         if (this.authoringFiles.get(path) === version) this.authoringFiles.delete(path);
@@ -322,7 +332,9 @@ export default class ReviewCenterPlugin extends Plugin {
   private async performStartReview(mode: ReviewMode, extra: boolean, groupId?: string, tagPath?: string): Promise<void> {
     if (!await this.ensureReviewData()) return;
     this.service.startOrResumeSession(mode, extra, groupId, tagPath);
-    const entry = await this.service.prepareCurrent();
+    // The card view verifies its current item while rendering. Notes need to
+    // be verified here before their source file can be opened.
+    const entry = mode === "note" ? await this.service.prepareCurrent() : this.service.currentEntry();
     if (!entry && !this.service.currentPendingChange()) {
       new Notice("当前没有可复习内容");
       await this.openReviewCenter(true);
@@ -346,7 +358,7 @@ export default class ReviewCenterPlugin extends Plugin {
       await this.openReviewCenter(true);
       return;
     }
-    await this.service.prepareCurrent();
+    if (session.mode === "note") await this.service.prepareCurrent();
     this.showDashboard = false;
     if (session.mode === "note") await this.openActiveNote();
     else await this.openReviewCenter(false);
@@ -544,7 +556,13 @@ export default class ReviewCenterPlugin extends Plugin {
     this.addCommand({ id: "organize-materials", name: "整理数据", callback: () => void this.refreshData(true) });
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
     this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
-    for (const [id, name, action] of [["insert-review-callout", "插入复习折叠块", "review"], ["insert-review-qa", "插入问答模板", "qa"], ["insert-review-cloze", "选中文字制作填空", "cloze"]] as const) {
+    for (const [id, name, action] of [
+      ["insert-review-callout", "插入复习折叠块", "review"],
+      ["insert-review-qa", "插入简写问答卡", "qa"],
+      ["insert-review-cloze", "选中文字制作填空", "cloze"],
+      ["insert-standard-review-qa", "插入标准问答卡", "standard-qa"],
+      ["insert-standard-review-cloze", "插入标准挖空卡", "standard-cloze"],
+    ] as const) {
       this.addCommand({ id, name, editorCallback: () => { this.captureCardSelection(); void this.authorCurrentNote(action); } });
     }
     this.addCommand({
@@ -846,6 +864,7 @@ export default class ReviewCenterPlugin extends Plugin {
       const changed = this.service.requeueDue();
       if (waiting && changed && !this.showDashboard && this.service.session?.mode === "note") await this.openActiveNote();
       const views = this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW);
+      if (document.hidden || views.length === 0) return;
       const signature = JSON.stringify([new Date().toDateString(), this.service.counts("note"), this.service.counts("card")]);
       const dashboardChanged = signature !== this.tickSignature;
       this.tickSignature = signature;
@@ -897,4 +916,23 @@ export default class ReviewCenterPlugin extends Plugin {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class CardTemplateModal extends Modal {
+  constructor(private readonly plugin: ReviewCenterPlugin) { super(plugin.app); }
+
+  onOpen(): void {
+    this.setTitle("选择标准卡片");
+    const body = this.contentEl.createDiv({ cls: "review-card-template-options" });
+    const add = (title: string, description: string, action: "standard-qa" | "standard-cloze") => {
+      const button = body.createEl("button", { cls: "review-card-template-option" });
+      button.createEl("strong", { text: title });
+      button.createEl("span", { text: description });
+      button.onclick = () => { this.close(); void this.plugin.authorCurrentNote(action); };
+    };
+    add("标准问答卡", "START / Basic / Front / Back / END，可写多段答案", "standard-qa");
+    add("标准挖空卡", "START / Cloze / Text / Extra / END", "standard-cloze");
+  }
+
+  onClose(): void { this.contentEl.empty(); }
 }

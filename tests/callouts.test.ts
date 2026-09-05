@@ -49,7 +49,7 @@ describe("review callouts", () => {
     const cards = parseReviewCallouts(body).cards;
     expect(cards).toHaveLength(1);
     expect(cards[0].clozeIndex).toBe(1);
-    expect(renderCloze(cards[0].content.raw, 1, false)).toBe("真实 […]，示例 " + inline);
+    expect(renderCloze(cards[0].content.raw, 1, false)).toBe("真实 ==\u2060==，示例 " + inline);
   });
   it("does not scan unconfigured types or ordinary blockquotes", () => {
     expect(parseReviewCallouts("> [!other]-\n> {{c1::A}}").cards).toHaveLength(0);

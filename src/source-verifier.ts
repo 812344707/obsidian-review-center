@@ -2,7 +2,7 @@ import { getAllTags, TFile, type App } from "obsidian";
 import { parse } from "yaml";
 import { normalizeTags, resolveGroup } from "./config";
 import { reconcileRecordsWithHistory } from "./history";
-import { parseReviewCallouts } from "./parser";
+import { parseReviewCards } from "./parser";
 import type { ReviewStore } from "./storage";
 import type { HistoryEvent, ReviewCenterSettings, SourceRecord } from "./types";
 import { hashText, pathIsInside } from "./utils";
@@ -63,7 +63,7 @@ export async function verifySource(
   record.tags = [...new Set(getAllTags(cache) ?? [])].sort();
   record.sourceStatus = resolveGroup(record.tags, settings.noteGroups, file.path) || resolveGroup(record.tags, settings.cardGroups, file.path) ? "active" : "out-of-scope";
   if (itemId !== "note" && record.cards[itemId]) {
-    const parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
+    const parsed = parseReviewCards(markdown, settings.reviewCalloutTypes);
     if (!parsed.valid) {
       record.sourceStatus = "parse-error";
       record.warnings = parsed.warnings;

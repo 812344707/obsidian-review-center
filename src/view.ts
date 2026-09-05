@@ -206,7 +206,19 @@ export class ReviewCenterView extends ItemView {
       const cell = row.createDiv({ attr: { role: "gridcell" } });
       const gear = cell.createEl("button", { cls: "review-tree-gear", attr: { "aria-label": `${node.label}菜单` } });
       setIcon(gear, "settings"); gear.onclick = (event) => { event.stopPropagation(); this.nodeMenu(node, event); };
-      const select = () => { this.selected[this.homeMode] = node.id; this.saveHome(); void this.render(); };
+      const select = () => {
+        this.selected[this.homeMode] = node.id;
+        this.saveHome();
+        for (const other of Array.from(table.querySelectorAll<HTMLElement>('[role="row"][aria-selected]'))) {
+          other.removeClass("is-selected");
+          other.setAttribute("aria-selected", "false");
+        }
+        row.addClass("is-selected");
+        row.setAttribute("aria-selected", "true");
+        const selectedCounts = this.plugin.service.counts(node.mode, node.groupId, node.tagPath);
+        start.dataset.reviewStart = selectedCounts.due + selectedCounts.new > 0 ? "ready" : "empty";
+        this.updateStartState();
+      };
       row.onclick = select;
       row.onkeydown = (event) => {
         if (event.target !== row) return;
@@ -267,24 +279,41 @@ export class ReviewCenterView extends ItemView {
     await MarkdownRenderer.render(this.app, frontMarkdown, front, entry.sourcePath, this);
     if (version !== this.renderVersion) return;
 
-    if (!this.plugin.service.session?.answerVisible) {
-      card
-        .createEl("button", { cls: "mod-cta review-show-answer", text: "显示答案" })
-        .addEventListener("click", () => {
-          this.plugin.service.setAnswerVisible(true);
-          void this.render();
-        });
-    } else {
-      const divider = card.createDiv({ cls: "review-card-divider" });
-      divider.setText("答案");
-      const answer = card.createDiv({ cls: "review-card-answer markdown-rendered" });
-      const answerMarkdown =
-        entry.item.kind === "cloze"
-          ? renderCloze(entry.item.content.raw, entry.item.clozeIndex ?? 1, true)
-          : entry.item.content.answer;
-      await MarkdownRenderer.render(this.app, answerMarkdown, answer, entry.sourcePath, this);
+    const reveal = async (): Promise<void> => {
+      if (entry.item.kind === "cloze") {
+        front.empty();
+        await MarkdownRenderer.render(this.app, renderCloze(entry.item.content.raw, entry.item.clozeIndex ?? 1, true), front, entry.sourcePath, this);
+        if (entry.item.content.extra) {
+          card.createDiv({ cls: "review-card-divider", text: "补充" });
+          const extra = card.createDiv({ cls: "review-card-answer markdown-rendered" });
+          await MarkdownRenderer.render(this.app, entry.item.content.extra, extra, entry.sourcePath, this);
+        }
+      } else {
+        card.createDiv({ cls: "review-card-divider", text: "答案" });
+        const answer = card.createDiv({ cls: "review-card-answer markdown-rendered" });
+        await MarkdownRenderer.render(this.app, entry.item.content.answer, answer, entry.sourcePath, this);
+      }
+      if (version === this.renderVersion) this.renderGrades(card, entry);
+    };
+
+    if (this.plugin.service.session?.answerVisible) {
+      await reveal();
       if (version !== this.renderVersion) return;
-      this.renderGrades(card, entry);
+    } else {
+      const show = card.createEl("button", { cls: "mod-cta review-show-answer", text: "显示答案" });
+      show.addEventListener("click", () => void (async () => {
+        show.disabled = true;
+        try {
+          // This card was verified immediately before rendering. Grading still
+          // reloads its source and formal history before it can change progress.
+          this.plugin.service.setAnswerVisible(true);
+          show.remove();
+          await reveal();
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : String(error));
+          show.disabled = false;
+        }
+      })());
     }
 
     const sourceActions = container.createDiv({ cls: "review-source-actions" });

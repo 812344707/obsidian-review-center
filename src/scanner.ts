@@ -1,6 +1,7 @@
 import { App, TFile, getAllTags } from "obsidian";
 import { createHistoryEvent, reconcileRecordsWithHistory } from "./history";
-import { convertLegacySection, insertMissingBlockIds, parseReviewCallouts } from "./parser";
+import { CARD_PARSER_VERSION, convertLegacySection, insertMissingBlockIds, parseReviewCallouts, parseReviewCards } from "./parser";
+import { ParseCache } from "./parse-cache";
 import { createSchedule } from "./scheduler";
 import { ReviewStore } from "./storage";
 import type {
@@ -32,12 +33,16 @@ export class VaultScanner {
   private pendingMetadata = new Set<string>();
   private indexedHashes = new Map<string, string>();
   private verifiedHashes = new Map<string, string>();
+  private readonly parseCache: ParseCache;
 
   constructor(
     private readonly app: App,
     private readonly store: ReviewStore,
     private readonly getSettings: () => ReviewCenterSettings,
-  ) {}
+  ) {
+    this.parseCache = new ParseCache(() =>
+      (this.app.vault as typeof this.app.vault & { getName?: () => string }).getName?.() ?? "default-vault");
+  }
 
   markSourceChanged(path: string): void { this.pendingMetadata.add(path); }
 
@@ -229,6 +234,7 @@ export class VaultScanner {
         await this.store.appendHistory(deleteEvents);
         history.push(...deleteEvents);
         await this.store.deleteRecord(record.reviewId);
+        await this.parseCache.delete(record.reviewId);
       }
     }
     await progress.step(99, 99, 1, 1, "保存复习清单");
@@ -298,26 +304,29 @@ export class VaultScanner {
     const cache = this.app.metadataCache.getFileCache(entry.file);
     const tags = cache ? (getAllTags(cache) ?? []) : [];
     const cardGroup = resolveGroup(tags, settings.cardGroups, entry.file.path);
-    let parsed: ReturnType<typeof parseReviewCallouts> | undefined;
+    let parsed: ReturnType<typeof parseReviewCards> | undefined;
     let scannedMarkdown = "";
     if (migrationWarnings?.length) {
       parsed = { found: true, valid: false, cards: [], warnings: migrationWarnings };
     } else if (cardGroup) {
       let markdown = await this.app.vault.read(entry.file);
-      parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
+      parsed = (await this.parseSource(entry.reviewId, markdown)).result;
       if (parsed.valid && parsed.cards.some((draft) => !draft.blockId)) {
         await this.app.vault.process(entry.file, (current) => {
-          const latest = parseReviewCallouts(current, settings.reviewCalloutTypes);
+          const latest = parseReviewCards(current, settings.reviewCalloutTypes);
           return latest.valid ? insertMissingBlockIds(current, latest.cards, () => createId("rv")) : current;
         });
         markdown = await this.app.vault.read(entry.file);
-        parsed = parseReviewCallouts(markdown, settings.reviewCalloutTypes);
+        parsed = (await this.parseSource(entry.reviewId, markdown)).result;
       }
       scannedMarkdown = markdown;
     }
     if (parsed?.valid && existing && scannedMarkdown) {
       const recognized = new Set(parsed.cards.map((card) => card.blockId));
-      const stillPresent = new Set([...scannedMarkdown.matchAll(/^[ \t]*(?:>[ \t]*)*\^(rv-[a-z0-9-]+)[ \t]*$/gmi)].map((match) => match[1].toLowerCase()));
+      const stillPresent = new Set([
+        ...[...scannedMarkdown.matchAll(/^[ \t]*(?:>[ \t]*)*\^(rv-[a-z0-9-]+)[ \t]*$/gmi)].map((match) => match[1].toLowerCase()),
+        ...[...scannedMarkdown.matchAll(/^[ \t]*<!--\s*review-center-id:\s*(rv-[a-z0-9-]+)\s*-->[ \t]*$/gmi)].map((match) => match[1].toLowerCase()),
+      ]);
       if (Object.values(existing.cards).some((card) => card.blockId && !recognized.has(card.blockId) && stillPresent.has(card.blockId))) {
         parsed.valid = false;
         parsed.warnings.push("原卡片标识仍在笔记中，但不在可识别的复习块内；已保留进度，请检查提示块类型和格式。");
@@ -329,10 +338,19 @@ export class VaultScanner {
     record.tags = [...new Set(tags)].sort();
     record.updatedAt = now.toISOString();
     record.sourceStatus = !parsed || parsed.valid ? "active" : "parse-error";
-    const syncWarnings = record.warnings.filter((warning) => warning.startsWith("同步冲突："));
-    record.warnings = [...syncWarnings, ...(parsed?.warnings ?? [])];
+    record.warnings = [...(parsed?.warnings ?? [])];
     if (parsed?.valid) this.reconcileCards(record, parsed.cards, events, now);
     return record;
+  }
+
+  private parseSource(sourceId: string, markdown: string) {
+    const settings = this.getSettings();
+    const settingsSignature = JSON.stringify({
+      reviewCalloutTypes: settings.reviewCalloutTypes.map((value) => value.toLowerCase()).sort(),
+      cardRecognition: settings.cardGroups.map((group) => ({ id: group.id, tags: group.tags, recognition: group.recognition })),
+    });
+    return this.parseCache.getOrParse(sourceId, markdown, CARD_PARSER_VERSION, settingsSignature,
+      () => parseReviewCards(markdown, settings.reviewCalloutTypes));
   }
 
   private createRecord(
@@ -406,6 +424,7 @@ export class VaultScanner {
           hash: draft.hash,
           question: draft.content.question,
           answer: draft.content.answer,
+          extra: draft.content.extra,
           raw: draft.content.raw,
           startLine: draft.content.sourceStartLine,
           endLine: draft.content.sourceEndLine,
@@ -452,6 +471,7 @@ export class VaultScanner {
     hash: string;
     question: string;
     answer: string;
+    extra?: string;
     raw: string;
     startLine: number;
     endLine: number;
@@ -470,6 +490,7 @@ export class VaultScanner {
         question: options.question,
         answer: options.answer,
         raw: options.raw,
+        ...(options.extra ? { extra: options.extra } : {}),
         sourceStartLine: options.startLine,
         sourceEndLine: options.endLine,
       },

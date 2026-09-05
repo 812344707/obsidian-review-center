@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createHistoryEvent, resolveItemHistory } from "../src/history";
+import { createHistoryEvent, reconcileRecordsWithHistory, resolveItemHistory } from "../src/history";
 import { createSchedule } from "../src/scheduler";
 import type { ReviewItem } from "../src/types";
+import { fixtureRecord } from "./fixtures";
 
 function item(revision: number, answer: string): ReviewItem {
   return {
@@ -92,5 +93,24 @@ describe("history conflict reconciliation", () => {
     const result = resolveItemHistory(undefined, events);
     expect(result.item).toBeNull();
     expect(result.revision).toBe(2);
+  });
+
+  it("keeps deterministic conflict diagnostics without leaving a resolved home-page issue", () => {
+    const record = fixtureRecord();
+    record.warnings = ["同步冲突：rv-one:qa", "格式仍需处理"];
+    const first = item(2, "手机"), second = item(2, "电脑");
+    first.id = second.id = "rv-one:qa";
+    record.cards["rv-one:qa"] = item(1, "初始");
+    record.cards["rv-one:qa"].id = "rv-one:qa";
+    const events = [
+      createHistoryEvent({ sessionId: "phone", deviceId: "phone", sourceId: record.reviewId, itemId: "rv-one:qa",
+        action: "review", baseRevision: 1, after: first, now: new Date("2026-09-01T01:00:00Z") }),
+      createHistoryEvent({ sessionId: "desktop", deviceId: "desktop", sourceId: record.reviewId, itemId: "rv-one:qa",
+        action: "review", baseRevision: 1, after: second, now: new Date("2026-09-01T02:00:00Z") }),
+    ];
+    const result = reconcileRecordsWithHistory([record], events);
+    expect(result.conflicts).toBe(1);
+    expect(result.records[0].cards["rv-one:qa"].content.answer).toBe("电脑");
+    expect(result.records[0].warnings).toEqual(["格式仍需处理"]);
   });
 });

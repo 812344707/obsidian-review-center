@@ -16,6 +16,7 @@ interface OverlayHost {
   returnToReview(): Promise<void>;
   exitReview(): Promise<void>;
   captureCardSelection(): void;
+  chooseCardTemplate(): void;
   authorCurrentNote(action: CardAuthoringAction): Promise<void>;
 }
 
@@ -91,7 +92,7 @@ export class ReviewOverlay extends Component {
     for (const [action, title] of [["review", "制卡"], ["qa", "问答"], ["cloze", "填空"]] as const) {
       const button = tools.createEl("button", { text: title, attr: { "aria-label": title, "data-author-card": action } });
       button.onpointerdown = (event) => { this.host.captureCardSelection(); event.preventDefault(); };
-      button.onclick = () => void this.host.authorCurrentNote(action);
+      button.onclick = () => action === "review" ? this.host.chooseCardTemplate() : void this.host.authorCurrentNote(action);
     }
     const actions = this.rootEl.createDiv({ cls: "review-center-overlay-actions" });
     for (const grade of REVIEW_GRADES) {

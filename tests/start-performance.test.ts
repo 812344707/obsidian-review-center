@@ -158,7 +158,7 @@ describe("review start disk I/O and coordination", () => {
     expect(h.openCenter).toHaveBeenCalledWith(false);
   });
 
-  it("does not consume a restored queue when metadata is not ready", async () => {
+  it("does not consume a restored card queue before the card view verifies it", async () => {
     const h = harness();
     const session = { id: "saved", mode: "card" as const, entryKeys: ["source::rv-one:qa"], currentIndex: 0, answerVisible: true, startedAt: new Date().toISOString() };
     h.plugin.service.restoreLocalSession(structuredClone(session));
@@ -167,12 +167,13 @@ describe("review start disk I/O and coordination", () => {
     await h.plugin.startReview("card");
     expect(h.plugin.service.hasLoaded).toBe(true);
     expect(h.plugin.service.session).toMatchObject(session);
-    expect(h.openCenter).not.toHaveBeenCalled();
+    expect(h.plugin.service.session?.currentIndex).toBe(0);
+    expect(h.openCenter).toHaveBeenCalledWith(false);
     expect(h.plugin.startingReview).toBe(false);
     await h.plugin.startReview("card");
     expect(h.plugin.service.session?.id).toBe("saved");
     expect(h.plugin.service.session?.answerVisible).toBe(true);
-    expect(h.openCenter).toHaveBeenCalledWith(false);
+    expect(h.openCenter).toHaveBeenCalledTimes(2);
   });
 
   it("does not open an unverified source after a read error and retries on the next click", async () => {
@@ -260,6 +261,14 @@ describe("review start disk I/O and coordination", () => {
     expect(h.scanner.scan).not.toHaveBeenCalled();
     expect(Notice).toHaveBeenCalledWith(expect.stringContaining("整理数据"));
     expect(h.openCenter).toHaveBeenCalledWith(true);
+  });
+
+  it("does not recalculate dashboard counts while the page is hidden", async () => {
+    const h = harness();
+    const counts = vi.spyOn(h.plugin.service, "counts");
+    (document as unknown as { hidden: boolean }).hidden = true;
+    await Reflect.get(h.plugin, "tickReview").call(h.plugin);
+    expect(counts).not.toHaveBeenCalled();
   });
 
   it("does not mark startup create events as edits waiting for reindexing", async () => {

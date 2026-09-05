@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { cardAuthoringEdit, type CardAuthoringAction } from "../src/card-authoring";
-import { parseReviewCallouts } from "../src/parser";
+import { parseReviewCallouts, parseReviewCards } from "../src/parser";
 
 function edit(text: string, from: number, to: number, action: CardAuthoringAction) {
   const change = cardAuthoringEdit(text, from, to, action);
@@ -13,13 +13,13 @@ describe("quick card authoring", () => {
     expect(after.text).toContain("原文不能丢失\n\n> [!review]- 复习\n> \n\n下一段");
     expect(after.text.slice(after.cursor - 2, after.cursor)).toBe("> ");
   });
-  it("inserts the QA template inside a container and positions the cursor after the question marker", () => {
+  it("inserts a body Q/A card after a container and positions the cursor after Q:", () => {
     const initial = edit("原文", 1, 1, "review");
     const after = edit(initial.text, initial.cursor, initial.cursor, "qa");
     expect(after.text.match(/\[!review\]/g)).toHaveLength(1);
-    expect(after.text).toContain("> 问:: \n> 答:: ");
-    expect(after.text.slice(after.cursor - 4, after.cursor)).toBe("问:: ");
-    expect(parseReviewCallouts(after.text).valid).toBe(false);
+    expect(after.text).toContain("Q: \nA: ");
+    expect(after.text.slice(after.cursor - 3, after.cursor)).toBe("Q: ");
+    expect(parseReviewCards(after.text).valid).toBe(false);
   });
   it("creates an independent container when the review button is pressed inside another one", () => {
     const before = "> [!review]- A\n> {{c1::文字}}\n";
@@ -30,10 +30,10 @@ describe("quick card authoring", () => {
   it("wraps selected words with context and produces a recognized cloze outside a callout", () => {
     const before = "前一段\n人体共有十二条经脉。\n后一段";
     const from = before.indexOf("十二"), after = edit(before, from, from + 2, "cloze");
-    expect(after.text).toContain("> 人体共有{{c1::十二}}条经脉。");
+    expect(after.text).toContain("人体共有{{c1::十二}}条经脉。");
     expect(after.text.startsWith("前一段\n")).toBe(true);
     expect(after.text.endsWith("\n后一段")).toBe(true);
-    expect(parseReviewCallouts(after.text).cards[0].content.raw).toBe("人体共有{{c1::十二}}条经脉。");
+    expect(parseReviewCards(after.text).cards[0].content.raw).toBe("前一段\n人体共有{{c1::十二}}条经脉。\n后一段");
   });
   it("adds another cloze within a review block without nesting or discarding text", () => {
     const before = "> [!review]\n> {{c1::甲}}和乙\n";
@@ -60,5 +60,29 @@ describe("quick card authoring", () => {
     expect(parseReviewCallouts(incomplete).valid).toBe(false);
     expect(parseReviewCallouts(incomplete).warnings.some((w) => w.includes("问题为空"))).toBe(true);
     expect(parseReviewCallouts(incomplete).cards[0].content.answer).toBe("答案");
+  });
+
+  it("inserts standard Basic and Cloze templates and rejects cloze inside Q/A content", () => {
+    const basic = edit("正文", 2, 2, "standard-qa");
+    expect(basic.text).toContain("START\nBasic\nFront: \nBack: \nEND");
+    expect(basic.text.slice(basic.cursor - 7, basic.cursor)).toBe("Front: ");
+    const cloze = edit("正文", 2, 2, "standard-cloze");
+    expect(cloze.text).toContain("START\nCloze\nText: {{c1::}}\nExtra: \nEND");
+    const qa = "Q: 问题\nA: 这里是答案\n";
+    const from = qa.indexOf("答案");
+    expect(() => edit(qa, from, from + 2, "cloze")).toThrow("另起一段");
+    const incomplete = "Q: 尚未完成的问题\nA: \n";
+    expect(() => edit(incomplete, 3, 7, "cloze")).toThrow("另起一段");
+    const standard = "START\nBasic\nFront: 问题\nBack: 答案\nEND";
+    expect(() => edit(standard, standard.indexOf("问题"), standard.indexOf("问题") + 2, "cloze")).toThrow("另起一段");
+  });
+
+  it("increments cloze numbers across a whole body paragraph and standard Cloze block", () => {
+    const paragraph = "第一行 {{c1::甲}}\n第二行有乙";
+    const body = edit(paragraph, paragraph.indexOf("乙"), paragraph.indexOf("乙") + 1, "cloze");
+    expect(body.text).toContain("{{c2::乙}}");
+    const standard = "START\nCloze\nText: {{c1::甲}}和乙\nExtra:\nEND";
+    const updated = edit(standard, standard.indexOf("乙"), standard.indexOf("乙") + 1, "cloze");
+    expect(updated.text).toContain("{{c2::乙}}");
   });
 });

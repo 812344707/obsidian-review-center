@@ -66,12 +66,9 @@ export function reconcileRecordsWithHistory(
       }
     }
     record.warnings = record.warnings.filter((warning) => !warning.startsWith("同步冲突："));
-    const sourceConflictCount = countSourceConflicts(sourceEvents);
-    if (sourceConflictCount > 0) {
-      record.warnings.push(
-        `同步冲突：检测到 ${sourceConflictCount} 组并发操作，已采用时间较晚的记录。`,
-      );
-    }
+    // A deterministic winner has already been applied above. The returned
+    // conflict count remains available for diagnostics, without creating a
+    // user-facing task for an event that needs no further action.
   }
   return { records, conflicts };
 }
@@ -121,15 +118,4 @@ function compareEventWinner(left: HistoryEvent, right: HistoryEvent): number {
     new Date(left.occurredAt).getTime() - new Date(right.occurredAt).getTime() ||
     left.eventId.localeCompare(right.eventId)
   );
-}
-
-function countSourceConflicts(events: HistoryEvent[]): number {
-  const groups = new Map<string, HistoryEvent[]>();
-  for (const event of events) {
-    const key = `${event.itemId}::${event.baseRevision}`;
-    const group = groups.get(key) ?? [];
-    group.push(event);
-    groups.set(key, group);
-  }
-  return [...groups.values()].filter((group) => group.length > 1).length;
 }

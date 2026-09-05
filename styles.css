@@ -162,6 +162,36 @@
   min-height: 90px;
 }
 
+.review-card.is-cloze mark {
+  background: transparent;
+  border-bottom: 2px solid var(--text-normal);
+  color: inherit;
+  display: inline-block;
+  min-width: 4em;
+  padding: 0 0.18em 0.08em;
+  text-align: center;
+}
+
+.review-card-template-options {
+  display: grid;
+  gap: 10px;
+}
+
+.review-card-template-option {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  min-height: 64px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.review-card-template-option span {
+  color: var(--text-muted);
+  font-size: var(--font-smallest);
+}
+
 .review-grade-row,
 .review-center-overlay-actions {
   display: grid;

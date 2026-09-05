@@ -1,6 +1,6 @@
 import type { Grade } from "ts-fsrs";
 import { createHistoryEvent } from "./history";
-import { buildDailyQueue, collectEntries, getQueueCounts, isLearning } from "./queue";
+import { buildDailyQueue, collectEntries, getQueueCounts, isLearning, prepareDailyQueue, type DailyQueuePreparation } from "./queue";
 import {
   applyRating,
   previewSchedule,
@@ -38,6 +38,7 @@ export class ReviewService {
   private operationTail: Promise<unknown> = Promise.resolve();
   maintenance = false;
   private prepared: { sessionId: string; key: string; signature: string; sourceHash: string } | null = null;
+  private countContexts = new Map<ReviewMode, DailyQueuePreparation>();
 
   private enqueue<T>(operation: () => Promise<T>, maintenance = false): Promise<T> {
     if (this.maintenance && !maintenance) return Promise.reject(new Error("正在迁移或批量处理，请稍候。"));
@@ -72,6 +73,7 @@ export class ReviewService {
       const result = await this.scanner.refreshSource(record);
       Object.assign(record, result.record);
       this.history = result.history;
+      this.invalidateCounts();
     });
   }
 
@@ -97,6 +99,7 @@ export class ReviewService {
     this.conflicts = result.conflicts;
     this.hasLoaded = result.metadataReady !== false;
     this.restoringSession = !!this.session && !this.hasLoaded;
+    this.invalidateCounts();
     if (!this.hasLoaded) return;
     if (this.session) {
       const completed = this.session.entryKeys.slice(0, this.session.currentIndex);
@@ -116,6 +119,7 @@ export class ReviewService {
     if (result.record) Object.assign(record, result.record);
     else record.sourceStatus = "deleted";
     this.history = result.history;
+    this.invalidateCounts();
     return result.sourceHash;
   }
 
@@ -143,8 +147,16 @@ export class ReviewService {
   }
 
   counts(mode: ReviewMode, groupId?: string, tagPath?: string): QueueCounts {
-    return getQueueCounts(this.records, this.history, this.getSettings(), mode, new Date(), groupId, tagPath);
+    const now = new Date();
+    let context = this.countContexts.get(mode);
+    if (!context || context.day !== localDayKey(now)) {
+      context = prepareDailyQueue(this.records, this.history, this.getSettings(), mode, now);
+      this.countContexts.set(mode, context);
+    }
+    return getQueueCounts(this.records, this.history, this.getSettings(), mode, now, groupId, tagPath, context);
   }
+
+  settingsChanged(): void { this.invalidateCounts(); }
 
   allCount(mode: ReviewMode, groupId?: string): number {
     return collectEntries(this.records, mode, this.getSettings(), groupId).length;
@@ -661,7 +673,10 @@ export class ReviewService {
     await this.store.appendHistory([event]);
     await this.store.saveRecord(record);
     this.history.push(event);
+    this.invalidateCounts();
   }
+
+  private invalidateCounts(): void { this.countContexts.clear(); }
 
   private makeEvent(
     sourceId: string,

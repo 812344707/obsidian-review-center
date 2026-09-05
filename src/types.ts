@@ -21,6 +21,8 @@ export interface ReviewContent {
   question: string;
   answer: string;
   raw: string;
+  /** Optional back-of-card note for standard Cloze blocks. */
+  extra?: string;
   sourceStartLine: number;
   sourceEndLine: number;
 }
@@ -174,6 +176,7 @@ export interface ParsedCardDraft {
   content: ReviewContent;
   insertIdAfterLine: number;
   insertIdPrefix?: string;
+  insertIdStyle?: "block" | "hidden";
 }
 
 export interface ReviewSectionParseResult {

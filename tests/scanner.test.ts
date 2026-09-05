@@ -46,6 +46,31 @@ describe("tag scanner identity and scope", () => {
     await h.scanner.scan();
     expect(h.store.saveRecord).not.toHaveBeenCalled();
   });
+  it("assigns hidden body-card IDs once and preserves schedules across edits and rename", async () => {
+    const h = harness();
+    h.file.content = "Q: 正文问题\nA: 正文答案\n\n独立 {{c1::挖空}}。\n";
+    const first = (await h.scanner.scan()).records[0];
+    expect(h.file.content.match(/<!--review-center-id: rv-/g)).toHaveLength(2);
+    const ids = Object.keys(first.cards).sort();
+    expect(ids).toHaveLength(2);
+    const schedules = Object.fromEntries(ids.map((id) => [id, structuredClone(first.cards[id].schedule)]));
+    const textAfterFirstScan = h.file.content;
+    h.file.path = "新目录/改名.md"; h.file.basename = "改名";
+    const renamed = (await h.scanner.scan()).records[0];
+    expect(h.file.content).toBe(textAfterFirstScan);
+    expect(Object.keys(renamed.cards).sort()).toEqual(ids);
+    for (const id of ids) expect(renamed.cards[id].schedule).toEqual(schedules[id]);
+    h.file.content = h.file.content.replace("{{c1::挖空}}", "{{c1::挖空}} 和 {{c2::新增}} ");
+    const expanded = (await h.scanner.scan()).records[0];
+    const originalClozeId = ids.find((id) => id.endsWith(":c1"))!;
+    expect(expanded.cards[originalClozeId].schedule).toEqual(schedules[originalClozeId]);
+    expect(Object.keys(expanded.cards).filter((id) => id.endsWith(":c2"))).toHaveLength(1);
+    h.file.content = h.file.content.replace("正文答案", "修改后的正文答案");
+    const changed = (await h.scanner.scan()).records[0];
+    const qaId = ids.find((id) => id.endsWith(":qa"))!;
+    expect(changed.cards[qaId].status).toBe("pending-change");
+    expect(changed.cards[originalClozeId].schedule).toEqual(schedules[originalClozeId]);
+  });
   it("still persists changed cards and progress recovered from history", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
     h.store.saveRecord.mockClear();
