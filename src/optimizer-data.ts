@@ -56,7 +56,8 @@ export function buildOptimizerInput(records: SourceRecord[], history: HistoryEve
   }
   const p = preset.parameters;
   return { action, samples: samples.sort((a, b) => a.lastAt.localeCompare(b.lastAt)), logs: logs.sort((a, b) => a.id - b.id),
-    weights: p.weights ?? [...default_w], health: p.healthCheck !== false, learning_steps: p.learningSteps.length, relearning_steps: p.relearningSteps.length,
+    enable_short_term: preset.mode !== "note",
+    weights: p.weights ?? [...default_w], health: p.healthCheck !== false, learning_steps: preset.mode === "note" ? 0 : p.learningSteps.length, relearning_steps: preset.mode === "note" ? 0 : p.relearningSteps.length,
     new_limit: p.newLimit, review_limit: p.reviewLimit, maximum_interval: p.maximumInterval, new_ignore_review: p.newIgnoreReviewLimit !== false,
     deck_size: deckSize, cutoff: Math.round(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime() / 1000) };
 }

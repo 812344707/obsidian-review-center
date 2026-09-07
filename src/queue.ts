@@ -1,5 +1,5 @@
 import type { HistoryEvent, QueueCounts, QueueEntry, ReviewCenterSettings, ReviewMode, ReviewParameters, SourceRecord } from "./types";
-import { isDueSchedule, isNewSchedule } from "./scheduler";
+import { isDueSchedule, isNewSchedule, reviewDueDate } from "./scheduler";
 import { groupsFor, resolveGroup, nodeParameters, parameterPath, tagsMatch, tagMatches, naturalCompare } from "./config";
 import { effectiveReviews, eventMode } from "./activity";
 import { hashText, itemKey, localDayKey } from "./utils";
@@ -56,7 +56,7 @@ export function collectEntries(records: SourceRecord[], mode: ReviewMode, settin
   }
   return entries;
 }
-export function isLearning(entry: QueueEntry): boolean { return [1, 3].includes(entry.item.schedule.state); }
+export function isLearning(entry: QueueEntry): boolean { return entry.item.kind !== "note" && [1, 3].includes(entry.item.schedule.state); }
 export function isBuried(entry: QueueEntry, now: Date): boolean { return !!entry.item.buriedUntil && entry.item.buriedUntil > localDayKey(now); }
 export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[], settings: ReviewCenterSettings,
   mode: ReviewMode, now = new Date(), extra = false, groupId?: string, tagPath?: string, seed = localDayKey(now),
@@ -71,7 +71,7 @@ export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[]
     const random = (e: QueueEntry, note = false) => hashText(seed + ":" + group.id + ":" + (note ? e.sourceId : entryKey(e)));
     const stable = (a: QueueEntry, b: QueueEntry) => naturalCompare(a.sourcePath, b.sourcePath) || a.item.content.sourceStartLine - b.item.content.sourceStartLine || a.item.id.localeCompare(b.item.id);
     const byGroup = (a: QueueEntry, b: QueueEntry) => (groupRank.get(a.group.id)! - groupRank.get(b.group.id)!) || naturalCompare(a.tagPath ?? "", b.tagPath ?? "");
-    const dueTime = (e: QueueEntry) => new Date(e.item.schedule.due).getTime();
+    const dueTime = (e: QueueEntry) => reviewDueDate(e.item).getTime();
     const retrieval = (e: QueueEntry) => {
       const elapsed = Math.max(0, (now.getTime() - new Date(e.item.schedule.last_review ?? now).getTime()) / 86400000);
       const decay = -(e.group.parameters.weights?.[20] ?? 0.1542), factor = Math.pow(0.9, 1 / decay) - 1;
@@ -83,7 +83,7 @@ export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[]
         sort === "interval" || sort === "interval-desc" ? (a.item.schedule.scheduled_days - b.item.schedule.scheduled_days) * (sort.endsWith("desc") ? -1 : 1) :
         sort === "difficulty" || sort === "difficulty-desc" ? (a.item.schedule.difficulty - b.item.schedule.difficulty) * (sort.endsWith("desc") ? -1 : 1) :
         sort === "retention" || sort === "retention-desc" ? (retrieval(a) - retrieval(b)) * (sort.endsWith("desc") ? -1 : 1) :
-        sort === "due-random" ? localDayKey(new Date(a.item.schedule.due)).localeCompare(localDayKey(new Date(b.item.schedule.due))) || random(a).localeCompare(random(b)) : dueTime(a) - dueTime(b);
+        sort === "due-random" ? localDayKey(reviewDueDate(a.item)).localeCompare(localDayKey(reviewDueDate(b.item))) || random(a).localeCompare(random(b)) : dueTime(a) - dueTime(b);
       return delta || stable(a, b);
     };
     const typeOrder = (e: QueueEntry) => e.item.kind === "cloze" ? 1 + (e.item.clozeIndex ?? 1) : 0;
@@ -94,7 +94,7 @@ export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[]
         (new Date(a.item.introducedAt).getTime() - new Date(b.item.introducedAt).getTime()) * (sort === "created-desc" ? -1 : 1);
       return delta || stable(a, b);
     });
-    const due = entries.filter((e) => e.group.id === group.id && !e.isNew && isDueSchedule(e.item.schedule, now)).sort((a, b) => Number(reviewed.has(entryKey(b))) - Number(reviewed.has(entryKey(a))) || byDue(a, b));
+    const due = entries.filter((e) => e.group.id === group.id && !e.isNew && isDueSchedule(e.item.schedule, now, e.item.kind)).sort((a, b) => Number(reviewed.has(entryKey(b))) - Number(reviewed.has(entryKey(a))) || byDue(a, b));
     type Budget = { path: string; p: ReviewParameters; fresh: number; due: number };
     const paths = new Set<string>([tagPath ?? ""]);
     if (tagPath && order.limitsFromTop) paths.add("");
@@ -124,7 +124,7 @@ export function buildDailyQueue(records: SourceRecord[], history: HistoryEvent[]
     const inter = selectedDue.filter((e) => isLearning(e) && !intra.includes(e));
     const review = selectedDue.filter((e) => !isLearning(e));
     result.push(...intra, ...combine(selectedNew, combine(inter, review, order.interdayOrder ?? "before"), order.newOrder ?? "after"));
-    if (extra) result.push(...entries.filter((e) => e.group.id === group.id && !e.isNew && !isDueSchedule(e.item.schedule, now)).sort(byDue));
+    if (extra) result.push(...entries.filter((e) => e.group.id === group.id && !e.isNew && !isDueSchedule(e.item.schedule, now, e.item.kind)).sort(byDue));
   }
   return result;
 }

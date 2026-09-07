@@ -3,6 +3,17 @@ import { buildOptimizerInput, learningHistory, parseHistoryFilter } from "../src
 import { fixtureRecord, fixtureSettings, reviewEvent, today } from "./fixtures";
 
 describe("optimizer input fidelity", () => {
+  it("keeps note training and simulation in day mode even with legacy steps", () => {
+    const settings = fixtureSettings();
+    for (const preset of settings.presets!) {
+      preset.parameters.learningSteps = ["1m", "10m"];
+      preset.parameters.relearningSteps = ["10m"];
+      const input = buildOptimizerInput([], [], settings, preset, "optimize");
+      expect(input).toMatchObject(preset.mode === "note"
+        ? { enable_short_term: false, learning_steps: 0, relearning_steps: 0 }
+        : { enable_short_term: true, learning_steps: 2, relearning_steps: 1 });
+    }
+  });
   it("parses supported quoted filters and rejects unknown expressions", () => {
     expect(parseHistoryFilter('preset:"a b" tag:#card path:"资料/甲" -is:suspended')).toHaveLength(4);
     expect(() => parseHistoryFilter("preset:x nonsense")).toThrow("无法识别");

@@ -20,11 +20,12 @@ cargo build --locked --manifest-path optimizer/Cargo.toml --release --target was
 cp optimizer/target/wasm32-wasip1/release/review-center-optimizer.wasm assets/optimizer.wasm
 npm run build
 node scripts/check-optimizer.mjs
+node scripts/check-optimizer.mjs --notes
 ```
 
 开发中可将 `CARGO_HOME` 与 `RUSTUP_HOME` 指向本仓库 `.build-tools/` 内的专用目录，避免修改全局工具链。构建产物随源码记录；Rust 构建目录不进入安装包。
 
-`check-optimizer.mjs` 使用 80 个项目、400 条跨日评分验证训练、评估、健康检查和 7 档记忆率模拟。普通 Node 验证通过后仍须在真实 Obsidian 中运行优化、模拟、取消与草稿保存测试，因为两者的工作线程环境不同。
+`check-optimizer.mjs` 使用 80 个项目、400 条跨日评分验证训练、评估、健康检查和 7 档记忆率模拟。`--notes` 验证笔记关闭短期训练、学习／重学步数为 0，以及每天 1 篇新笔记、10 篇回顾、90 天上限的模拟。普通 Node 验证通过后仍须在真实 Obsidian 中运行优化、模拟、取消与草稿保存测试，因为两者的工作线程环境不同。
 
 fsrs 的 BSD-3-Clause 许可证全文随分发包附在 `THIRD_PARTY_NOTICES.txt`。
 Rust 和 JavaScript 依赖的许可证一并包含。其中 priority-queue 2.7.0 选择 MPL-2.0 许可分发，未修改的对应源码随包附在 `priority-queue-2.7.0-source.zip`。

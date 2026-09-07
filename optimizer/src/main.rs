@@ -12,9 +12,12 @@ struct Log { id: i64, cid: i64, rating: u8, interval: i32, last_interval: i32, d
 struct Input {
   action: String, samples: Vec<Sample>, weights: Vec<f32>, logs: Vec<Log>,
   health: bool, relearning_steps: usize, learning_steps: usize,
+  #[serde(default = "default_short_term")]
+  enable_short_term: bool,
   new_limit: usize, review_limit: usize, maximum_interval: f32,
   new_ignore_review: bool, deck_size: usize, cutoff: i64,
 }
+fn default_short_term() -> bool { true }
 fn emit(value: Value) { println!("{}", value); let _ = std::io::stdout().flush(); }
 fn run(input: Input) -> Result<Value, String> {
   let usable: Vec<&Sample> = input.samples.iter().filter(|s| s.reviews.iter().any(|r| r.delta_t > 0)).collect();
@@ -22,7 +25,7 @@ fn run(input: Input) -> Result<Value, String> {
   let ids: Vec<i64> = usable.iter().map(|s| s.cid).collect();
   let eligible = dataset.iter().filter(|i| i.reviews.len() > 1 && i.reviews.last().is_some_and(|r| r.delta_t > 0)).count();
   if eligible < 64 { return Err(format!("至少需要 64 条跨日复习记录；当前有 {} 条。原参数保持不变。", eligible)); }
-  let train = ComputeParametersInput { train_set:dataset.clone(), card_ids:Some(ids), progress:None, enable_short_term:true, num_relearning_steps:Some(input.relearning_steps), training_config:None };
+  let train = ComputeParametersInput { train_set:dataset.clone(), card_ids:Some(ids), progress:None, enable_short_term:input.enable_short_term, num_relearning_steps:Some(input.relearning_steps), training_config:None };
   if input.action == "optimize" {
     emit(json!({"progress":0.15,"message":"正在拟合个人记忆参数"}));
     let weights = fsrs::compute_parameters(train.clone()).map_err(|e| e.to_string())?;

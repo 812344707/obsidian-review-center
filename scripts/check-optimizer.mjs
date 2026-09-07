@@ -12,6 +12,7 @@ for(let cid=1;cid<=80;cid++) {
  }
 }
 const base={samples,logs,weights:[...default_w],health:true,relearning_steps:1,learning_steps:2,new_limit:10,review_limit:100,maximum_interval:36500,new_ignore_review:true,deck_size:80,cutoff:Math.round(Date.now()/1000)};
+if (process.argv.includes('--notes')) Object.assign(base, {enable_short_term:false,relearning_steps:0,learning_steps:0,new_limit:1,review_limit:10,maximum_interval:90});
 for(const action of ['optimize','retention']) {
  const start=Date.now();
  const result=await new Promise((resolve,reject)=>{
@@ -20,7 +21,7 @@ for(const action of ['optimize','retention']) {
   worker.on('message',m=>{ if(m.message) console.log(m.message); if(m.diagnostic) console.error(m.diagnostic); if(m.error) {reject(new Error(m.error));worker.terminate();} else if(m.result) {received=true;resolve(m.result);worker.terminate();} });
   worker.on('error',reject);worker.on('exit',c=>{if(!received&&c!==1) reject(new Error('No result '+c));});
  });
- if(action==='optimize') {assert.equal(result.weights.length,21);assert(result.weights.every(Number.isFinite));assert(Number.isFinite(result.after.logLoss));}
- else {assert.equal(result.rows.length,7);assert(result.recommended>=.7&&result.recommended<=.95);assert(result.rows.every(r=>Number.isFinite(r.minutesPerDay)));}
+ if(action==='optimize') {assert.equal(result.weights.length,21);assert(result.weights.every(Number.isFinite));assert(Number.isFinite(result.after.logLoss));if(process.argv.includes('--notes'))assert.deepEqual(result.weights.slice(17,20),[0,0,0]);}
+ else {assert.equal(result.rows.length,7);assert(result.recommended>=Math.fround(.7)&&result.recommended<=Math.fround(.95));assert(result.rows.every(r=>Number.isFinite(r.minutesPerDay)));}
  console.log(action,JSON.stringify(result),Date.now()-start+'ms');
 }

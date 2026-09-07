@@ -28,7 +28,8 @@ import { normalizeSettings, validateDataFolder, groupsFor } from "./config";
 import { copyDataDirectory } from "./data-migration";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import { applyBulkTags, type BulkTagPreview, type BulkTagRequest, type BulkTagResult } from "./tags";
-import { OptionsWorkspace, ReviewOptionsModal, RenameGroupModal, ConfirmActionModal } from "./options";
+import { OptionsWorkspace, ReviewOptionsModal, ConfirmActionModal } from "./options";
+import { groupLabel } from "./tag-groups";
 import { TagOperationModal } from "./tag-operations";
 import { OperationHistoryModal, type OperationJob } from "./operation-history";
 import { planReschedule, createRescheduleJob, runRescheduleJob } from "./reschedule";
@@ -128,12 +129,12 @@ export default class ReviewCenterPlugin extends Plugin {
   openOperationHistory(): void { new OperationHistoryModal(this).open(); }
   openReviewOptions(scope: ReviewScope): void { new ReviewOptionsModal(this, scope).open(); }
   renameReviewNode(scope: ReviewScope): void {
-    if (scope.tagPath) new TagOperationModal(this, scope, true).open(); else new RenameGroupModal(this, scope).open();
+    if (scope.tagPath) new TagOperationModal(this, scope, true).open(); else this.openRecognitionSettings(scope.mode);
   }
   deleteReviewNode(scope: ReviewScope): void {
     if (scope.tagPath) { new TagOperationModal(this, scope, false).open(); return; }
     const group = groupsFor(this.settings, scope.mode).find((g) => g.id === scope.groupId); if (!group) return;
-    new ConfirmActionModal(this, "删除复习组", `删除“${group.name}”的组配置，保留原笔记、卡片进度和历史。`, async () => {
+    new ConfirmActionModal(this, "移除复习标签", `停止通过“${groupLabel(group)}”纳入复习，保留原文标签、笔记、卡片进度和历史。`, async () => {
       const next = cloneValue(this.settings), groups = groupsFor(next, scope.mode), index = groups.findIndex((g) => g.id === scope.groupId);
       if (index >= 0) groups.splice(index, 1); await this.updateSettings(next);
     }).open();
@@ -235,6 +236,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async openReviewCenter(showDashboard = true): Promise<void> {
+    await this.enableFileExplorerAutoReveal();
     if (this.overlayMode) this.rememberActiveSourceLeaf();
     this.showDashboard = showDashboard;
     this.service.setTimingActive(!showDashboard && !document.hidden);
@@ -529,6 +531,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async openActiveNote(): Promise<void> {
+    await this.enableFileExplorerAutoReveal();
     let entry: QueueEntry | null;
     try { entry = await this.service.prepareCurrent(); }
     catch (error) { new Notice(errorMessage(error)); await this.openReviewCenter(true); return; }
@@ -550,6 +553,25 @@ export default class ReviewCenterPlugin extends Plugin {
       leaf.view.editor.scrollIntoView({ from: { line: 0, ch: 0 }, to: { line: 0, ch: 0 } }, true);
     }
     this.syncOverlayAfterOpen(leaf);
+  }
+
+  private async enableFileExplorerAutoReveal(): Promise<void> {
+    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+      try {
+        await leaf.loadIfDeferred();
+        // The native toggle also reveals the current file and saves the layout.
+        // These core-plugin members are not part of Obsidian's public API.
+        const explorer = leaf.view as typeof leaf.view & {
+          autoRevealFile?: boolean;
+          onToggleAutoReveal?: () => void;
+        };
+        if (explorer.autoRevealFile === false && typeof explorer.onToggleAutoReveal === "function") {
+          explorer.onToggleAutoReveal();
+        }
+      } catch (error) {
+        console.warn("[渐进式复习] 自动显示当前文件不可用", error);
+      }
+    }
   }
 
   private registerCommands(): void {

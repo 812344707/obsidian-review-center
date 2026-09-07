@@ -151,6 +151,8 @@ export interface ReviewGroup {
 }
 
 export interface ReviewCenterSettings {
+  /** Marks the one-time migration of the legacy note interval default. */
+  noteDaySchedulingVersion?: 1;
   noteGroups: ReviewGroup[];
   cardGroups: ReviewGroup[];
   showNoteHeatmap: boolean;

@@ -1,6 +1,7 @@
 import { effectiveReviews, eventMode } from "./activity";
 import { groupsFor, resolveGroup, tagsMatch } from "./config";
 import { collectEntries } from "./queue";
+import { reviewDueDate } from "./scheduler";
 import type { HistoryEvent, ReviewCenterSettings, ReviewMode, SerializedFsrsCard, SourceRecord } from "./types";
 import { itemKey, localDayKey } from "./utils";
 
@@ -115,7 +116,7 @@ export function buildStatistics(records: SourceRecord[], history: HistoryEvent[]
     const key = itemKey(entry.sourceId, entry.item.id);
     if (seen.has(key) || entry.isNew) continue;
     seen.add(key);
-    const due = new Date(entry.item.schedule.due);
+    const due = reviewDueDate(entry.item);
     if (!Number.isFinite(due.getTime())) { invalidDue++; continue; }
     let day = localDayKey(due);
     const buried = entry.item.buriedUntil;

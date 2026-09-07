@@ -1,27 +1,28 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
-import { createGroup, groupsFor } from "./config";
-import type { ReviewCenterSettings, ReviewGroup, ReviewMode } from "./types";
-import { cloneValue, createId } from "./utils";
-import { folderInput } from "./inputs";
+import { groupsFor, parseTags } from "./config";
+import type { ReviewCenterSettings, ReviewMode } from "./types";
+import { folderInput, tagInput, TagInput } from "./inputs";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import type ReviewCenterPlugin from "./main";
-import { renderRecognitionEditor } from "./recognition-editor";
+import { groupTag, replaceGroupTag, setReviewTags, tagGroups } from "./tag-groups";
+import { groupFilter } from "./recognition";
 export { DEFAULT_SETTINGS } from "./config";
 
-const TABS = [["groups", "复习分组"], ["notes", "笔记识别"], ["cards", "卡片识别"], ["data", "数据与备份"], ["display", "显示"]] as const;
+const TABS = [["groups", "复习标签"], ["data", "数据与备份"], ["display", "显示"]] as const;
 type SettingsPage = typeof TABS[number][0];
 type DisplayDraft = Pick<ReviewCenterSettings, "showNoteHeatmap" | "showCardHeatmap" | "autoOpenDashboard">;
 
 export class ReviewCenterSettingTab extends PluginSettingTab {
   private page: SettingsPage = "groups";
-  private mode: ReviewMode = "note";
-  private selected: Partial<Record<ReviewMode, string>> = {};
   private cleaners: Array<() => void> = [];
   private folderDraft?: string;
   private displayDraft?: DisplayDraft;
   private migrating = false;
   constructor(app: App, private readonly host: ReviewCenterPlugin) { super(app, host); }
-  showRecognition(mode: ReviewMode): void { this.page = mode === "note" ? "notes" : "cards"; this.mode = mode; this.display(); }
+  showRecognition(mode: ReviewMode): void {
+    this.page = "groups"; this.display();
+    this.containerEl.querySelector<HTMLInputElement>(`[data-review-tags="${mode}"] input`)?.focus();
+  }
   hide(): void { this.clean(); }
   private clean(): void {
     this.cleaners.forEach((clean) => clean()); this.cleaners = [];
@@ -51,55 +52,67 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     });
     const panel = root.createDiv({ cls: "review-settings-panel", attr: { role: "tabpanel", id: "review-settings-panel", "aria-labelledby": "review-settings-tab-" + this.page } });
     if (this.page === "groups") this.renderGroups(panel);
-    else if (this.page === "notes" || this.page === "cards") this.renderRecognition(panel, this.page === "notes" ? "note" : "card");
     else if (this.page === "data") this.renderData(panel);
     else this.renderDisplay(panel);
   }
 
   private renderGroups(root: HTMLElement): void {
-    root.createEl("p", { cls: "review-settings-intro", text: "管理复习组名称和优先级；文件夹、标签条件分别在“笔记识别”“卡片识别”中设置。每日上限、学习步长等参数在主页齿轮 → 选项中设置。" });
-    const selector = new Setting(root).setName("复习组");
-    selector.addDropdown((d) => d.addOption("note", "笔记复习").addOption("card", "卡片复习").setValue(this.mode)
-      .onChange((value) => { this.mode = value as ReviewMode; this.display(); }));
+    root.createEl("p", { cls: "review-settings-intro", text: "一个标签就是一组，子标签自动展开。例如添加 #医学，#医学/伤寒 也会进入复习。可直接选择已有标签或输入新标签。" });
     const workspace = this.host.optionsWorkspace;
-    const groups = groupsFor(workspace.draft, this.mode);
-    const group = groups.find((entry) => entry.id === this.selected[this.mode]) ?? groups[0];
-    if (group) this.selected[this.mode] = group.id;
-    selector.addDropdown((d) => {
-      if (!groups.length) d.addOption("", "暂无复习组");
-      groups.forEach((entry) => d.addOption(entry.id, entry.name));
-      d.setValue(group?.id ?? "").onChange((value) => { this.selected[this.mode] = value; this.display(); });
-    });
-    selector.addDropdown((d) => d.addOption("", "管理复习组…")
-      .addOption("new", "新增").addOption("copy", "复制当前组").addOption("up", "上移优先级").addOption("down", "下移优先级").addOption("delete", "删除当前组")
-      .onChange((value) => { if (value) this.manage(value, group); }));
-    if (group) {
-      const editor = root.createDiv({ cls: "review-group-editor" }); editor.toggleClass("is-card", this.mode === "card");
-      workspace.renderGroupFields(editor, { mode: this.mode, groupId: group.id });
+    for (const mode of ["note", "card"] as const) {
+      const title = mode === "note" ? "笔记复习标签" : "知识点复习标签";
+      const row = new Setting(root).setName(title).setDesc(mode === "note" ? "带这些标签的整篇笔记，按天安排阅读和整理。" : "识别带这些标签的笔记中的问答和挖空，使用独立的复习参数。");
+      row.settingEl.dataset.reviewTags = mode;
+      const key = "review-tags:" + mode;
+      const selected = () => tagGroups(groupsFor(workspace.draft, mode)).map((group) => groupTag(group)!);
+      const input = new TagInput(this.app, row.controlEl, selected(), (tags) => {
+        setReviewTags(workspace.draft, mode, tags); workspace.raw.set(key, input.input.value);
+      }, title);
+      input.input.value = workspace.raw.get(key) ?? "";
+      input.input.addEventListener("input", () => { workspace.raw.set(key, input.input.value); });
+      workspace.validators.set(key, () => {
+        const pending = workspace.raw.get(key);
+        if (pending?.trim()) setReviewTags(workspace.draft, mode, [...selected(), ...parseTags(pending)]);
+        workspace.raw.delete(key);
+      });
+      this.cleaners.push(() => input.destroy());
     }
-    else root.createEl("p", { text: "从“管理复习组”新增一组，再设置识别范围。" });
-    this.saveRow(root, "保存复习分组", "切换分类、模式或组保留草稿。保存应用已编辑的组及共享预设；删除组保留原文和复习进度。",
+    root.createEl("p", { cls: "review-settings-intro", text: "在笔记属性或正文中添加标签，然后点击主页“整理数据”。复习数量和间隔可在对应标签的齿轮 → 选项中调整。" });
+    this.renderLegacyGroups(root);
+    this.saveRow(root, "保存复习标签", "移除这里的标签只停止纳入；原文标签、复习进度和历史保留。",
       () => workspace.save(), () => workspace.reset());
     new Setting(root).setName("批量纳入文章").setDesc("按文件夹或标签集筛选文章，预览后补充复习标签。")
       .addButton((b) => b.setButtonText("批量添加标签").onClick(() => new BulkTagsModal(this.app, this.host).open()));
   }
 
-  private renderRecognition(root: HTMLElement, mode: ReviewMode): void {
-    this.mode = mode;
-    root.createEl("p", { cls: "review-settings-intro", text: mode === "note" ? "笔记识别：条件匹配的整篇文章进入笔记复习，无需复习块。" : "卡片识别：先按以下条件选文章，再识别其中 [!review] 块里的问答和填空。与笔记范围独立。" });
-    const workspace = this.host.optionsWorkspace, groups = groupsFor(workspace.draft, mode);
-    const group = groups.find((g) => g.id === this.selected[mode]) ?? groups[0];
-    if (group) this.selected[mode] = group.id;
-    new Setting(root).setName("识别到复习组").addDropdown((d) => {
-      if (!groups.length) d.addOption("", "请先新增复习组");
-      for (const g of groups) d.addOption(g.id, g.name);
-      d.setValue(group?.id ?? "").onChange((v) => { this.selected[mode] = v; this.display(); });
+  private renderLegacyGroups(root: HTMLElement): void {
+    const workspace = this.host.optionsWorkspace;
+    const legacy = (["note", "card"] as const).flatMap((mode) => {
+      const groups = groupsFor(workspace.draft, mode), editable = new Set(tagGroups(groups));
+      return groups.filter((group) => !editable.has(group)).map((group) => ({ mode, group }));
     });
-    if (group) renderRecognitionEditor(this.app, root, group, () => this.display(), (clean) => this.cleaners.push(clean));
-    this.saveRow(root, mode === "note" ? "保存笔记识别" : "保存卡片识别", "保存后点击主页“整理数据”更新清单；切换页面保留草稿，移出范围保留进度。", () => workspace.save(), () => workspace.reset());
-    if (mode === "card") root.createEl("pre", { cls: "review-callout-example", text: "> [!review]- 复习\n> 问:: 这一节的核心观点是什么？\n> 答:: 这里填写答案。\n\n> [!review]- 填空\n> 需要记住{{c1::这段文字}}。" });
-    new Setting(root).setName("识别与内容异常").setDesc("查看问题原因和对应处理办法；修正后重新检查。")
-      .addButton((b) => b.setButtonText("查看待处理内容").onClick(() => this.openManagement()));
+    if (!legacy.length) return;
+    const box = root.createEl("details", { cls: "review-legacy-groups" });
+    box.createEl("summary", { text: `原有分组（${legacy.length}）` });
+    box.createEl("p", { cls: "review-settings-intro", text: "原来的组合条件继续生效。选择一个标签可替换该组的范围，保留参数和进度；保存后生效。" });
+    for (const { mode, group } of legacy) {
+      const filter = groupFilter(group), labels = { is: "是", "is-not": "不是", contains: "包含", excludes: "排除" };
+      const description = filter.rules.map((r) => `${r.field === "tag" ? "标签 #" : "文件夹 "}${r.value}（${labels[r.operator]}）`).join(filter.match === "all" ? "，且 " : "，或 ") || "尚未设置范围";
+      const row = new Setting(box).setName(`${mode === "note" ? "笔记" : "知识点"} · ${group.name}`).setDesc(description);
+      let value = "";
+      row.addText((t) => {
+        t.setPlaceholder("选择替代标签").onChange((v) => { value = v; });
+        const suggest = tagInput(this.app, t.inputEl, (v) => { value = v; }); this.cleaners.push(() => suggest.close());
+      });
+      const error = box.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });
+      row.addButton((b) => b.setButtonText("改用标签").onClick(() => {
+        try { replaceGroupTag(workspace.draft, mode, group.id, value); this.display(); }
+        catch (e) { error.setText(e instanceof Error ? e.message : String(e)); }
+      }));
+      row.addButton((b) => b.setButtonText("移除").onClick(() => {
+        const groups = groupsFor(workspace.draft, mode); groups.splice(groups.indexOf(group), 1); this.display();
+      }));
+    }
   }
 
   private renderData(root: HTMLElement): void {
@@ -158,23 +171,5 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     }));
   }
   private openManagement(): void { this.host.closePluginSettings(); void this.host.openManagement(); }
-  private manage(action: string, group?: ReviewGroup): void {
-    const groups = [...groupsFor(this.host.optionsWorkspace.draft, this.mode)];
-    if (action === "new" || (action === "copy" && group)) {
-      const next = action === "new" ? createGroup(this.mode) : { ...cloneValue(group!), id: createId("group"), name: group!.name + " 副本" };
-      next.presetId = createId("preset"); next.nodes = {};
-      (this.host.optionsWorkspace.draft.presets ??= []).push({ id: next.presetId, mode: this.mode, name: next.name, parameters: cloneValue(next.parameters) });
-      groups.push(next); this.selected[this.mode] = next.id;
-    } else if (group) {
-      const index = groups.findIndex((entry) => entry.id === group.id);
-      if (action === "delete") groups.splice(index, 1);
-      else {
-        const other = index + (action === "up" ? -1 : 1);
-        if (other >= 0 && other < groups.length) [groups[index], groups[other]] = [groups[other], groups[index]];
-      }
-    }
-    if (this.mode === "note") this.host.optionsWorkspace.draft.noteGroups = groups; else this.host.optionsWorkspace.draft.cardGroups = groups;
-    this.display();
-  }
   private async patch(patch: Partial<ReviewCenterSettings>): Promise<void> { await this.host.updateSettings({ ...this.host.settings, ...patch }); }
 }

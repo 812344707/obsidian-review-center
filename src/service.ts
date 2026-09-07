@@ -5,6 +5,7 @@ import {
   applyRating,
   previewSchedule,
   resetSchedule,
+  reviewDueDate,
 } from "./scheduler";
 import { VaultScanner, type ScanResult } from "./scanner";
 import type { ProgressReporter } from "./preparation";
@@ -165,7 +166,7 @@ export class ReviewService {
   nextDue(mode: ReviewMode, groupId?: string, tagPath?: string): Date | null {
     const timestamps = collectEntries(this.records, mode, this.getSettings(), groupId, tagPath)
       .filter((entry) => entry.item.schedule.reps > 0)
-      .map((entry) => new Date(entry.item.schedule.due).getTime())
+      .map((entry) => reviewDueDate(entry.item).getTime())
       .filter(Number.isFinite);
     return timestamps.length > 0 ? new Date(Math.min(...timestamps)) : null;
   }

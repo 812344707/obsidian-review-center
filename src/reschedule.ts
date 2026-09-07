@@ -1,7 +1,8 @@
 import { fsrs, generatorParameters, type Grade } from "ts-fsrs";
 import { collectEntries } from "./queue";
 import { learningHistory } from "./optimizer-data";
-import { cloneValue, createId, deserializeCard, serializeCard } from "./utils";
+import { cloneValue, createId, serializeCard } from "./utils";
+import { schedulingCard, schedulingDate } from "./scheduler";
 import { createHistoryEvent } from "./history";
 import type ReviewCenterPlugin from "./main";
 import type { HistoryEvent, ReviewCenterSettings, ReviewItem, SourceRecord } from "./types";
@@ -22,12 +23,13 @@ export function planReschedule(records: SourceRecord[], history: HistoryEvent[],
       const item = entry.item.id === "note" ? original.note : original.cards[entry.item.id];
       const reviews = learningHistory(history, entry.sourceId, entry.item.id);
       if (!reviews.length || !(reviews[0].wasNew ?? reviews[0].after?.schedule.reps === 1)) { skipped.push(entry.sourcePath + " · 缺少完整学习历史"); continue; }
-      const engine = fsrs(generatorParameters({ w: p.weights, request_retention: p.retention, maximum_interval: p.maximumInterval, enable_fuzz: false,
+      const engine = fsrs(generatorParameters({ w: p.weights, request_retention: p.retention, maximum_interval: p.maximumInterval, enable_fuzz: false, enable_short_term: mode !== "note",
         learning_steps: p.learningSteps as import("ts-fsrs").FSRSParameters["learning_steps"], relearning_steps: p.relearningSteps as import("ts-fsrs").FSRSParameters["relearning_steps"] }));
-      const replay = engine.reschedule(deserializeCard(item.schedule), reviews.map((e) => ({ rating: e.rating as Grade, review: e.occurredAt })), { update_memory_state: true });
+      const replay = engine.reschedule(schedulingCard(item), reviews.map((e) => ({ rating: e.rating as Grade, review: schedulingDate(new Date(e.occurredAt), item.kind) })), { update_memory_state: true });
       const final = replay.collections.at(-1)?.card; if (!final) continue;
       const interval = Math.min(p.maximumInterval, engine.next_interval(final.stability, 0));
       const due = new Date(item.schedule.last_review ?? reviews.at(-1)!.occurredAt); due.setDate(due.getDate() + interval);
+      if (mode === "note") due.setHours(0, 0, 0, 0);
       const computed = serializeCard(final);
       const after: ReviewItem = { ...cloneValue(item), revision: item.revision + 1, schedule: { ...item.schedule, stability: computed.stability, difficulty: computed.difficulty, due: due.toISOString(), scheduled_days: interval } };
       entries.push({ sourceId: entry.sourceId, path: entry.sourcePath, before: cloneValue(item), after });

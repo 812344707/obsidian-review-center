@@ -47,4 +47,20 @@ describe("tag scopes and migration", () => {
     for (const input of ["0m", "24h", "1d", "10", "-1m", "1m junk"]) expect(() => parseSteps(input)).toThrow();
     for (const input of ["a//b", "a/", "123", "a:b"]) expect(() => parseTags(input)).toThrow();
   });
+  it("migrates the legacy note ceiling once and preserves custom quotas, intervals and card settings", () => {
+    const raw = normalizeSettings(null);
+    delete raw.noteDaySchedulingVersion;
+    const note = raw.noteGroups[0].parameters;
+    Object.assign(note, { newLimit: 7, reviewLimit: 23, retention: 0.8, maximumInterval: 36500, learningSteps: ["3m"], relearningSteps: ["7m"] });
+    raw.presets!.push({ id: "custom-note", name: "自定义笔记", mode: "note", parameters: { ...note, maximumInterval: 45 } });
+    const before = JSON.stringify(raw), cards = structuredClone(raw.cardGroups);
+    const upgraded = normalizeSettings(raw);
+    expect(upgraded.noteGroups[0].parameters).toMatchObject({ newLimit: 7, reviewLimit: 23, retention: 0.8, maximumInterval: 90, learningSteps: [], relearningSteps: [] });
+    expect(upgraded.presets!.find((preset) => preset.id === "custom-note")!.parameters.maximumInterval).toBe(45);
+    expect(upgraded.cardGroups).toEqual(cards);
+    expect(JSON.stringify(raw)).toBe(before);
+    expect(normalizeSettings(upgraded)).toEqual(upgraded);
+    upgraded.noteGroups[0].parameters.maximumInterval = 36500;
+    expect(normalizeSettings(upgraded).noteGroups[0].parameters.maximumInterval).toBe(36500);
+  });
 });

@@ -105,7 +105,7 @@ export class VaultScanner {
     const file = this.app.vault.getAbstractFileByPath(record.sourcePath);
     if (!(file instanceof TFile)) throw new Error("笔记路径已变化，请重新打开。");
     const settings = this.getSettings();
-    if (!resolveGroup(record.tags, settings.cardGroups, file.path)) throw new Error("此笔记未在卡片识别范围内，请在“卡片识别”中设置文件夹或标签条件。");
+    if (!resolveGroup(record.tags, settings.cardGroups, file.path)) throw new Error("此笔记未纳入知识点复习，请在“复习标签”中选择知识点标签，并给笔记打上该标签。");
     this.knownRevisions = collectLatestRevisions(verified.history);
     const events: HistoryEvent[] = [];
     const updated = await this.scanFile({ file, reviewId: record.reviewId }, record, events);

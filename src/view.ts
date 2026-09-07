@@ -8,13 +8,14 @@ import {
 } from "obsidian";
 import { BackupPickerModal, ChangedCardsModal } from "./modals";
 import { renderCloze } from "./parser";
-import { GRADE_LABELS, REVIEW_GRADES } from "./scheduler";
+import { GRADE_LABELS, REVIEW_GRADES, reviewDueDate } from "./scheduler";
 import type ReviewCenterPlugin from "./main";
 import { groupsFor, resolveGroup } from "./config";
 import { buildReviewTree, flattenTree, type ReviewTreeNode } from "./tree";
 import { defaultStatisticsState, renderStatistics } from "./statistics-view";
 import type { QueueEntry, ReviewItem, ReviewMode, SourceRecord } from "./types";
 import { groupFilter } from "./recognition";
+import { groupLabel } from "./tag-groups";
 import { issueAdvice } from "./review-issues";
 
 export const REVIEW_CENTER_VIEW = "review-center-view";
@@ -172,7 +173,10 @@ export class ReviewCenterView extends ItemView {
     const count = selected ? this.plugin.service.counts(this.homeMode, selected.groupId, selected.tagPath) : null;
     start.dataset.reviewStart = count && count.due + count.new > 0 ? "ready" : "empty";
     this.updateStartState();
-    start.onclick = () => { if (selected) void this.plugin.startReview(this.homeMode, false, selected.groupId, selected.tagPath); };
+    start.onclick = () => {
+      const current = flat.find((node) => node.id === this.selected[this.homeMode]);
+      if (current) void this.plugin.startReview(this.homeMode, false, current.groupId, current.tagPath);
+    };
     actions.createEl("button", { text: "统计", attr: { "aria-label": "查看复习统计" } }).onclick = () => this.showPage("stats");
     actions.createEl("button", { text: "设置", attr: { "aria-label": "打开插件设置" } }).onclick = () => this.plugin.openPluginSettings();
     const materialStatus = container.createDiv({ cls: "review-materials-status", attr: { role: "status", "aria-live": "polite" } });
@@ -191,7 +195,7 @@ export class ReviewCenterView extends ItemView {
     const scroll = container.createDiv({ cls: "review-tree-scroll" });
     const table = scroll.createDiv({ cls: "review-tree", attr: { role: "treegrid", "aria-label": "复习组和标签" } });
     const head = table.createDiv({ cls: "review-tree-row review-tree-heading", attr: { role: "row" } });
-    for (const label of ["复习组", "未学习", "学习中", "待复习", ""]) head.createDiv({ text: label, attr: { role: "columnheader" } });
+    for (const label of ["复习标签", "未学习", "学习中", "待复习", ""]) head.createDiv({ text: label, attr: { role: "columnheader" } });
     const add = (node: ReviewTreeNode, depth: number) => {
       const counts = this.plugin.service.counts(node.mode, node.groupId, node.tagPath);
       const open = this.expanded[node.id] ?? !node.tagPath;
@@ -231,8 +235,8 @@ export class ReviewCenterView extends ItemView {
     nodes.forEach((node) => add(node, 0));
     if (!nodes.length || !groupsFor(this.plugin.settings, this.homeMode).some((g) => groupFilter(g).rules.length)) {
       const empty = table.createDiv({ cls: "review-tree-empty" });
-      empty.createEl("p", { text: "先设置笔记或卡片的识别范围，再点击整理数据。" });
-      empty.createEl("button", { text: "设置复习组" }).onclick = () => this.plugin.openPluginSettings();
+      empty.createEl("p", { text: "先添加复习标签，并给笔记打上该标签，再点击整理数据。" });
+      empty.createEl("button", { text: "设置复习标签" }).onclick = () => this.plugin.openRecognitionSettings(this.homeMode);
     }
     const foot = container.createDiv({ cls: "review-tree-footer" });
     foot.createSpan({ text: "数量为当前可开始的内容", attr: { title: "数量已扣除每日上限和搁置内容。多标签内容会重复显示，父级与实际复习按内容去重，父级不一定等于子级相加。" } });
@@ -244,11 +248,11 @@ export class ReviewCenterView extends ItemView {
 
   private nodeMenu(node: ReviewTreeNode, event: MouseEvent): void {
     const menu = new Menu();
-    menu.addItem((i) => i.setTitle("重命名").setIcon("pencil").onClick(() => this.plugin.renameReviewNode(node)));
+    menu.addItem((i) => i.setTitle(node.tagPath ? "重命名标签" : "设置复习标签").setIcon("pencil").onClick(() => this.plugin.renameReviewNode(node)));
     menu.addItem((i) => i.setTitle("选项").setIcon("settings").onClick(() => this.plugin.openReviewOptions(node)));
     menu.addItem((i) => i.setTitle("导出").setIcon("download").onClick(() => { void this.plugin.service.exportScope(node).then((path) => new Notice("范围备份已写入：" + path)).catch((e) => new Notice(String(e))); }));
     menu.addSeparator();
-    menu.addItem((i) => i.setTitle("删除").setIcon("trash-2").onClick(() => this.plugin.deleteReviewNode(node)));
+    menu.addItem((i) => i.setTitle(node.tagPath ? "删除标签" : "移除复习标签").setIcon("trash-2").onClick(() => this.plugin.deleteReviewNode(node)));
     menu.showAtMouseEvent(event);
   }
 
@@ -270,7 +274,7 @@ export class ReviewCenterView extends ItemView {
     for (const tag of entry.tags) tags.createSpan({ text: tag });
 
     const card = container.createDiv({ cls: `review-card is-${entry.item.kind}` });
-    card.createEl("div", { cls: "review-card-kind", text: `${entry.item.kind === "qa" ? "问答卡" : "挖空卡"} · ${entry.group.name}` });
+    card.createEl("div", { cls: "review-card-kind", text: `${entry.item.kind === "qa" ? "问答卡" : "挖空卡"} · ${groupLabel(entry.group)}` });
     const front = card.createDiv({ cls: "review-card-front markdown-rendered" });
     const frontMarkdown =
       entry.item.kind === "cloze"
@@ -363,7 +367,7 @@ export class ReviewCenterView extends ItemView {
     const nextDue = this.plugin.service.nextDue(mode, this.plugin.service.session?.groupId, this.plugin.service.session?.tagPath);
     done.createEl("p", {
       text: nextDue
-        ? `已完成当前限额内的内容。下次到期：${formatDue(nextDue.toISOString())}`
+        ? `已完成当前限额内的内容。下次到期：${formatDue(nextDue.toISOString(), mode)}`
         : "已完成当前限额内的内容。",
     });
     const undo = done.createEl("button", { text: "撤销上一次" });
@@ -482,12 +486,12 @@ export class ReviewCenterView extends ItemView {
       const row = parent.createDiv({ cls: "review-management-row" });
       const main = row.createDiv({ cls: "review-management-main" });
       const group = resolveGroup(record.tags, groupsFor(this.plugin.settings, item.kind === "note" ? "note" : "card"), record.sourcePath);
-      const scope = record.sourceStatus !== "out-of-scope" && group ? group.name : "范围外，进度保留";
+      const scope = record.sourceStatus !== "out-of-scope" && group ? groupLabel(group) : "范围外，进度保留";
       main.createEl("strong", {
         text: item.kind === "note" ? record.sourceTitle : item.content.question.slice(0, 100) || "挖空卡",
       });
       main.createEl("small", {
-        text: `${record.sourcePath} · ${scope} · ${statusLabel(item.status)} · 下次 ${formatDue(item.schedule.due)}`,
+        text: `${record.sourcePath} · ${scope} · ${statusLabel(item.status)} · 下次 ${formatDue(reviewDueDate(item), item.kind === "note" ? "note" : "card")}`,
       });
       const actions = row.createDiv({ cls: "review-management-actions" });
       if (item.status === "suspended") {
@@ -557,8 +561,9 @@ function statusLabel(status: ReviewItem["status"]): string {
   }[status];
 }
 
-function formatDue(value: string): string {
-  const date = new Date(value);
+function formatDue(value: string | Date, mode: ReviewMode = "card"): string {
+  const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return "未知";
+  if (mode === "note") return date.toLocaleDateString("zh-CN");
   return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }

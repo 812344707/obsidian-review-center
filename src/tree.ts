@@ -1,11 +1,12 @@
 import { groupsFor, naturalCompare, normalizeTags, resolveGroup, tagMatches } from "./config";
 import type { ReviewCenterSettings, ReviewMode, ReviewScope, SourceRecord } from "./types";
 import { recognitionTags } from "./recognition";
+import { groupLabel } from "./tag-groups";
 export interface ReviewTreeNode extends ReviewScope { id: string; label: string; children: ReviewTreeNode[] }
 export function scopeKey(scope: ReviewScope): string { return JSON.stringify([scope.mode, scope.groupId, scope.tagPath ?? ""]); }
 export function buildReviewTree(records: SourceRecord[], settings: ReviewCenterSettings, mode: ReviewMode): ReviewTreeNode[] {
   return groupsFor(settings, mode).map((group) => {
-    const root: ReviewTreeNode = { mode, groupId: group.id, id: "", label: group.name, children: [] };
+    const root: ReviewTreeNode = { mode, groupId: group.id, id: "", label: groupLabel(group), children: [] };
     root.id = scopeKey(root);
     const prefixes = recognitionTags(group).sort(naturalCompare).filter((tag, _, all) => !all.some((other) => other !== tag && tagMatches(tag, other)));
     const nodes = new Map<string, ReviewTreeNode>();

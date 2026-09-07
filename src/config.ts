@@ -7,9 +7,9 @@ export function defaultParameters(mode: ReviewMode): ReviewParameters {
     newLimit: mode === "note" ? 1 : 10,
     reviewLimit: mode === "note" ? 10 : 100,
     retention: mode === "note" ? 0.85 : 0.9,
-    learningSteps: ["1m", "10m"],
-    relearningSteps: ["10m"],
-    maximumInterval: 36500,
+    learningSteps: mode === "note" ? [] : ["1m", "10m"],
+    relearningSteps: mode === "note" ? [] : ["10m"],
+    maximumInterval: mode === "note" ? 90 : 36500,
     newIgnoreReviewLimit: true, limitsFromTop: false, insertion: "sequential",
     newGather: "created", newSort: "gather", newOrder: "after", interdayOrder: "before", reviewSort: "due",
     leechThreshold: 8, leechAction: "tag", buryNew: false, buryReview: false, buryInterday: false,
@@ -81,6 +81,7 @@ export function normalizeParameters(value: unknown, mode: ReviewMode): ReviewPar
   const p = object(value);
   const defaults = defaultParameters(mode);
   const steps = (key: "learningSteps" | "relearningSteps") => {
+    if (mode === "note") return [];
     try {
       if (!Array.isArray(p[key]) || !(p[key] as unknown[]).every((s) => typeof s === "string")) return defaults[key];
       return parseSteps((p[key] as string[]).join(" "));
@@ -99,13 +100,20 @@ export function normalizeParameters(value: unknown, mode: ReviewMode): ReviewPar
 /** v1 folder settings become empty tag groups, without changing any source notes. */
 export function normalizeSettings(value: unknown): ReviewCenterSettings {
   const data = object(value);
+  const parameters = (value: unknown, mode: ReviewMode): ReviewParameters => {
+    const stored = object(value);
+    // Existing custom limits survive. Only the former built-in 100-year note
+    // ceiling adopts the new default, once; later explicit edits stay intact.
+    const migrate = mode === "note" && data.noteDaySchedulingVersion !== 1 && stored.maximumInterval === 36500;
+    return normalizeParameters(migrate ? { ...stored, maximumInterval: 90 } : stored, mode);
+  };
   const groups = (mode: ReviewMode): ReviewGroup[] => {
     const stored = data[`${mode}Groups`];
     if (!Array.isArray(stored)) {
       const group = createGroup(mode);
       group.id = `default-${mode}`;
       if (value == null) group.tags = ["review"];
-      group.parameters = normalizeParameters({
+      group.parameters = parameters({
         newLimit: data[`${mode}NewLimit`], reviewLimit: data[`${mode}ReviewLimit`], retention: data[`${mode}Retention`],
       }, mode);
       return [group];
@@ -120,7 +128,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
       try { tags = parseTags(Array.isArray(entry.tags) ? entry.tags.filter((t) => typeof t === "string").join("\n") : ""); } catch { /* Invalid scope stays empty. */ }
       return {
         id, name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : mode === "note" ? "笔记复习" : "卡片复习",
-        tags, recognition: normalizeRecognition(entry.recognition), parameters: normalizeParameters(entry.parameters, mode),
+        tags, recognition: normalizeRecognition(entry.recognition), parameters: parameters(entry.parameters, mode),
         presetId: typeof entry.presetId === "string" ? entry.presetId : undefined,
         nodes: normalizeNodes(entry.nodes),
       };
@@ -132,7 +140,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     const p = object(raw);
     if (typeof p.id !== "string" || !p.id || !["note", "card"].includes(String(p.mode)) || presets.some((x) => x.id === p.id)) continue;
     const mode = p.mode as ReviewMode;
-    presets.push({ id: p.id, mode, name: typeof p.name === "string" && p.name.trim() ? p.name.trim() : "默认预设", parameters: normalizeParameters(p.parameters, mode) });
+    presets.push({ id: p.id, mode, name: typeof p.name === "string" && p.name.trim() ? p.name.trim() : "默认预设", parameters: parameters(p.parameters, mode) });
   }
   for (const mode of ["note", "card"] as const) for (const group of mode === "note" ? noteGroups : cardGroups) {
     let preset = presets.find((p) => p.id === group.presetId && p.mode === mode);
@@ -145,6 +153,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     group.presetId = preset.id; group.parameters = preset.parameters;
   }
   return {
+    noteDaySchedulingVersion: 1,
     noteGroups, cardGroups, presets,
     showNoteHeatmap: data.showNoteHeatmap !== false, showCardHeatmap: data.showCardHeatmap !== false,
     reviewHeading: typeof data.reviewHeading === "string" && data.reviewHeading.trim() ? data.reviewHeading.trim() : "复习",
