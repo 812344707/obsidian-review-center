@@ -23,6 +23,18 @@ const parsed = (answer: string) => ({
 });
 
 describe("local parse cache", () => {
+  it("rebuilds a bad matching cache entry without touching other vaults", async () => {
+    const backend = memoryBackend(), cache = new ParseCache(() => "vault-a", async () => backend);
+    const other = new ParseCache(() => "vault-b", async () => backend);
+    await cache.getOrParse("source", "正文", 1, "rules", () => parsed("错误缓存"));
+    await other.getOrParse("source", "正文", 1, "rules", () => parsed("另一个库"));
+    const result = await cache.getOrParse("source", "正文", 1, "rules", () => parsed("重新解析"), true);
+    expect(result.hit).toBe(false);
+    expect(result.result.cards[0].content.answer).toBe("重新解析");
+    expect((await other.getOrParse("source", "正文", 1, "rules", () => parsed("不应调用"))).result.cards[0].content.answer).toBe("另一个库");
+    expect((await cache.getOrParse("source", "正文", 1, "rules", () => parsed("不应调用"))).result.cards[0].content.answer).toBe("重新解析");
+  });
+
   it("uses SHA-256 over normalized full text", async () => {
     expect(await sha256Text("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     expect(await sha256Text("a\r\nb")).toBe(await sha256Text("a\nb"));

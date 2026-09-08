@@ -32,6 +32,31 @@ function harness(tags = ["note", "card"]) {
 }
 
 describe("tag scanner identity and scope", () => {
+  it("retains missing source identities and schedules during repair and reconnects them when they return", async () => {
+    const h = harness();
+    const original = (await h.scanner.scan()).records[0];
+    const history = structuredClone(h.history);
+    h.files.splice(0);
+    const missing = await h.scanner.repair();
+    expect(missing.records[0]).toMatchObject({ reviewId: original.reviewId, sourceStatus: "deleted", note: original.note, cards: original.cards });
+    expect(h.records.has(original.reviewId)).toBe(true);
+    expect(h.history).toEqual(history);
+    h.files.push(h.file);
+    const restored = (await h.scanner.repair()).records[0];
+    expect(restored).toMatchObject({ reviewId: original.reviewId, sourceStatus: "active", note: original.note, cards: original.cards });
+  });
+
+  it("waits for pending metadata before repair without modifying sources or records", async () => {
+    const h = harness();
+    await h.scanner.scan(); h.store.saveRecord.mockClear(); h.app.vault.process.mockClear();
+    h.scanner.markSourceChanged(h.file.path);
+    expect((await h.scanner.repair()).metadataReady).toBe(false);
+    expect(h.store.saveRecord).not.toHaveBeenCalled();
+    expect(h.app.vault.process).not.toHaveBeenCalled();
+    h.scanner.markMetadataReady(h.file.path, h.file.content);
+    expect((await h.scanner.repair()).records).toHaveLength(1);
+  });
+
   it("keeps both review scopes when writing an identity temporarily invalidates the metadata cache", async () => {
     const h = harness();
     h.file.content = "Q: 正文问题\nA: 正文答案\n\n独立 {{c1::挖空}}。\n";

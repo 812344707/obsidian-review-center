@@ -8,6 +8,7 @@ vi.mock("obsidian", () => {
     addButton(make: (button: any) => void) {
       const button = {
         text: "", disabled: false, click: () => {},
+        buttonEl: { dataset: {}, setAttribute: vi.fn() },
         setButtonText(text: string) { this.text = text; return this; },
         setCta() { return this; },
         setDisabled(value: boolean) { this.disabled = value; return this; },
@@ -22,6 +23,25 @@ vi.mock("obsidian", () => {
 import { ReviewCenterSettingTab } from "../src/settings";
 
 describe("saving settings with Obsidian thenable buttons", () => {
+  it.each([false, true])("shows the repair result and restores the button without thenable loops (failure=%s)", async (failure) => {
+    ui.buttons = []; ui.assimilations = 0;
+    const status = { textContent: "" };
+    const root = { createDiv: vi.fn(() => status), querySelector: (selector: string) => selector === "[data-repair-vault]" ? ui.buttons[0]?.buttonEl : status };
+    const host = {
+      repairingVault: false, startingReview: false, preparation: { state: "idle", percent: 0, message: "" }, service: { maintenance: false },
+      repairVault: vi.fn(async () => { if (failure) throw new Error("备份失败"); return { records: 2, issues: 1, backupPath: "exports/pre-repair.json" }; }),
+    };
+    const tab = new ReviewCenterSettingTab({} as never, host as never);
+    Object.assign(tab, { containerEl: root });
+    Reflect.get(tab, "renderRepair").call(tab, root);
+    ui.buttons[0].click();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(host.repairVault).toHaveBeenCalledOnce();
+    expect(status.textContent).toContain(failure ? "备份失败" : "pre-repair.json");
+    expect(ui.buttons[0].buttonEl.disabled).toBe(false);
+    expect(ui.assimilations).toBe(0);
+  });
+
   it.each([false, true])("finishes settings save without assimilating the button (failure=%s)", async (failure) => {
     ui.buttons = []; ui.assimilations = 0;
     const root = { createDiv: vi.fn(() => ({ setText: vi.fn() })) };

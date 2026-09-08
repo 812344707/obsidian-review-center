@@ -13,7 +13,7 @@ import { Rating, type Grade } from "ts-fsrs";
 import { ChangedCardsModal } from "./modals";
 import { ReviewOverlay, type OverlayMode } from "./overlay";
 import { VaultScanner } from "./scanner";
-import { ReviewService } from "./service";
+import { ReviewService, type VaultRepairResult } from "./service";
 import { DEFAULT_SETTINGS, ReviewCenterSettingTab } from "./settings";
 import { ReviewStore } from "./storage";
 import type {
@@ -53,6 +53,7 @@ export default class ReviewCenterPlugin extends Plugin {
   private overlayMode: OverlayMode | null = null;
   private sourceLeaf: WorkspaceLeaf | null = null;
   private refreshPromise: Promise<boolean> | null = null;
+  private repairPromise: Promise<VaultRepairResult> | null = null;
   preparation: PreparationProgress & { state: "idle" | "running" | "done" | "error" } = { state: "idle", percent: 0, message: "" };
   materialsDirty = false;
   private authorSelection?: { path: string; markdown: string; from: number; to: number };
@@ -209,7 +210,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async refreshData(showNotice = false): Promise<boolean> {
-    if (this.service?.maintenance) return false;
+    if (this.service?.maintenance || this.repairingVault) return false;
     if (this.refreshPromise) return this.refreshPromise;
     this.preparation = { state: "running", percent: 0, message: "准备整理数据" };
     this.updatePreparationState();
@@ -241,6 +242,43 @@ export default class ReviewCenterPlugin extends Plugin {
         if (!this.startingReview) void this.renderOpenViews();
       });
     return this.refreshPromise;
+  }
+
+  get repairingVault(): boolean { return this.repairPromise !== null; }
+
+  repairVault(): Promise<VaultRepairResult> {
+    if (this.repairPromise) return this.repairPromise;
+    if (this.startingReview || this.refreshPromise || this.service.maintenance) {
+      return Promise.reject(new Error("正在准备复习、整理数据或批量处理，请完成后再修复。"));
+    }
+    this.preparation = { state: "running", percent: 0, message: "准备修复知识库" };
+    this.repairPromise = Promise.resolve().then(async () => {
+      await this.ensureMigrated();
+      this.service.setTimingActive(false);
+      this.sourceLeaf = null;
+      this.overlayMode = null;
+      this.overlay.detach();
+      this.showDashboard = true;
+      const result = await this.service.repair((progress) => {
+        this.preparation = { ...progress, state: "running" };
+        this.updatePreparationState();
+      });
+      this.materialsDirty = false;
+      this.preparation = { state: "done", percent: 100, message: result.issues
+        ? `修复检查完成，${result.issues} 篇笔记需要核对，请在内容管理中查看`
+        : `修复完成，已核对 ${result.records} 篇笔记，复习进度保留` };
+      return result;
+    }).catch((error: unknown) => {
+      this.materialsDirty = true;
+      this.preparation = { ...this.preparation, state: "error", message: `修复未完成：${errorMessage(error)}` };
+      throw error;
+    }).finally(() => {
+      this.repairPromise = null;
+      this.updatePreparationState();
+      void this.renderOpenViews();
+    });
+    this.updatePreparationState();
+    return this.repairPromise;
   }
 
   async openReviewCenter(showDashboard = true): Promise<void> {
@@ -379,9 +417,13 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private runReviewStart(operation: () => Promise<void>): Promise<void> {
     if (this.startPromise) return this.startPromise;
-    if (this.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return Promise.resolve(); }
+    if (this.service.maintenance || this.repairingVault) { new Notice("正在修复、迁移或批量处理，请稍候。"); return Promise.resolve(); }
     this.startPromise = Promise.resolve().then(operation).catch((error: unknown) => {
       console.error("[渐进式复习] 开始复习失败", error);
+      this.service.setTimingActive(false);
+      this.showDashboard = true;
+      this.overlayMode = null;
+      this.overlay?.detach();
       new Notice(`无法开始复习：${errorMessage(error)}`);
     }).finally(() => {
       this.startPromise = null;
@@ -402,6 +444,7 @@ export default class ReviewCenterPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW)) {
       if (leaf.view instanceof ReviewCenterView) leaf.view.updatePreparationState();
     }
+    this.settingsTab?.updateRepairState();
   }
 
   private ensureLoaded(): Promise<void> {
@@ -445,7 +488,7 @@ export default class ReviewCenterPlugin extends Plugin {
       );
       leaf.view.editor.focus();
     }
-    this.syncOverlayAfterOpen(leaf);
+    this.syncOverlayAfterOpen();
   }
 
   getOverlayEntry(): QueueEntry | null {
@@ -570,7 +613,7 @@ export default class ReviewCenterPlugin extends Plugin {
       leaf.view.editor.setCursor({ line: 0, ch: 0 });
       leaf.view.editor.scrollIntoView({ from: { line: 0, ch: 0 }, to: { line: 0, ch: 0 } }, true);
     }
-    this.syncOverlayAfterOpen(leaf);
+    this.syncOverlayAfterOpen();
   }
 
   private async enableFileExplorerAutoReveal(): Promise<void> {
@@ -661,13 +704,13 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private getSourceLeaf(file: TFile): WorkspaceLeaf {
-    if (this.sourceLeaf && this.sourceLeaf.getViewState().type !== REVIEW_CENTER_VIEW) {
+    if (this.sourceLeaf && this.isLeafAttached(this.sourceLeaf) && this.sourceLeaf.getViewState().type !== REVIEW_CENTER_VIEW) {
       return this.sourceLeaf;
     }
     this.sourceLeaf = null;
 
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (activeView?.file?.path === file.path) {
+    if (activeView?.file?.path === file.path && this.isLeafAttached(activeView.leaf)) {
       this.sourceLeaf = activeView.leaf;
       return activeView.leaf;
     }
@@ -697,47 +740,50 @@ export default class ReviewCenterPlugin extends Plugin {
   private async openInSourceLeaf(file: TFile, openState: OpenViewState): Promise<WorkspaceLeaf> {
     let leaf = this.getSourceLeaf(file);
     try {
-      await leaf.openFile(file, openState);
-      this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      await this.app.workspace.revealLeaf(leaf);
-      return await this.resolveOpenedSourceLeaf(file, leaf);
+      return await this.openAndRevealSourceLeaf(file, leaf, openState);
     } catch (error) {
       console.warn("[渐进式复习] 原文标签页已失效，正在重新创建", error);
       this.sourceLeaf = null;
       leaf = this.app.workspace.getLeaf("tab");
       this.sourceLeaf = leaf;
-      await leaf.openFile(file, openState);
-      this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      await this.app.workspace.revealLeaf(leaf);
-      return await this.resolveOpenedSourceLeaf(file, leaf);
+      return await this.openAndRevealSourceLeaf(file, leaf, openState);
     }
+  }
+
+  private async openAndRevealSourceLeaf(file: TFile, leaf: WorkspaceLeaf, openState: OpenViewState): Promise<WorkspaceLeaf> {
+    await leaf.openFile(file, openState);
+    // Closing a tab does not necessarily make openFile reject. A detached leaf
+    // may retain its MarkdownView and file path while nothing opens on screen.
+    if (!this.isLeafAttached(leaf)) throw new Error("原文标签页已关闭。");
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    await this.app.workspace.revealLeaf(leaf);
+    await leaf.loadIfDeferred();
+    return this.resolveOpenedSourceLeaf(file, leaf);
+  }
+
+  private isLeafAttached(target: WorkspaceLeaf): boolean {
+    let attached = false;
+    this.app.workspace.iterateAllLeaves((leaf) => { if (leaf === target) attached = true; });
+    return attached;
   }
 
   private async resolveOpenedSourceLeaf(file: TFile, fallback: WorkspaceLeaf): Promise<WorkspaceLeaf> {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const activeLeaf = this.app.workspace.getMostRecentLeaf();
-      if (activeLeaf && this.isMarkdownLeafForPath(activeLeaf, file.path)) {
+      if (activeLeaf && this.isLeafAttached(activeLeaf) && !activeLeaf.isDeferred && this.isMarkdownLeafForPath(activeLeaf, file.path)) {
         this.sourceLeaf = activeLeaf;
         return activeLeaf;
       }
       const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (activeView?.file?.path === file.path) {
+      if (activeView?.file?.path === file.path && this.isLeafAttached(activeView.leaf)) {
         this.sourceLeaf = activeView.leaf;
         return activeView.leaf;
       }
-      const loadedLeaf = this.findLoadedMarkdownLeaf(file.path);
-      if (loadedLeaf) {
-        this.sourceLeaf = loadedLeaf;
-        return loadedLeaf;
-      }
-      if (this.isMarkdownLeafForPath(fallback, file.path)) {
-        this.sourceLeaf = fallback;
-        return fallback;
-      }
+      if (!this.isLeafAttached(fallback)) throw new Error("原文标签页已关闭。");
       await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
     }
-    this.sourceLeaf = fallback;
-    return fallback;
+    this.sourceLeaf = null;
+    throw new Error("未能显示复习笔记，请再次点击开始。");
   }
 
   private rememberActiveSourceLeaf(): void {
@@ -766,31 +812,22 @@ export default class ReviewCenterPlugin extends Plugin {
     return (viewFile ?? stateFile) === path;
   }
 
-  private syncOverlayAfterOpen(leaf: WorkspaceLeaf): void {
+  private syncOverlayAfterOpen(): void {
     if (this.unloaded) return;
-    this.overlay.sync(leaf, true);
-    for (const delay of [50, 200, 600]) {
-      this.defer(() => {
-        const activeLeaf = this.app.workspace.getMostRecentLeaf();
-        const sourcePath = this.service.currentEntry()?.sourcePath ?? "";
-        if (activeLeaf && this.isMarkdownLeafForPath(activeLeaf, sourcePath)) {
-          this.sourceLeaf = activeLeaf;
-          this.overlay.sync(activeLeaf, true);
-        } else if (this.sourceLeaf === leaf) {
-          this.overlay.sync(leaf, true);
-        }
-      }, delay);
-    }
+    this.syncCurrentOverlay();
+    for (const delay of [50, 200, 600]) this.defer(() => this.syncCurrentOverlay(), delay);
   }
 
   private primeOverlayWhileOpening(): void {
     if (this.unloaded) return;
-    const sync = () => {
-      const leaf = this.app.workspace.getMostRecentLeaf() ?? this.sourceLeaf;
-      if (leaf) this.overlay.sync(leaf, true);
-    };
-    sync();
-    for (const delay of [100, 300, 700, 1500]) this.defer(sync, delay);
+    this.syncCurrentOverlay();
+    for (const delay of [100, 300, 700, 1500]) this.defer(() => this.syncCurrentOverlay(), delay);
+  }
+
+  private syncCurrentOverlay(): void {
+    if (this.unloaded) return;
+    const leaf = this.app.workspace.getMostRecentLeaf();
+    this.overlay.sync(leaf && this.isLeafAttached(leaf) ? leaf : null);
   }
 
   private defer(callback: () => void, delay: number): void {

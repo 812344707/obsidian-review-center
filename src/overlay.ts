@@ -29,7 +29,7 @@ export class ReviewOverlay extends Component {
     super();
   }
 
-  sync(leaf: WorkspaceLeaf | null, force = false): void {
+  sync(leaf: WorkspaceLeaf | null): void {
     const mode = this.host.getOverlayMode();
     const entry = this.host.getOverlayEntry();
     const state = leaf?.getViewState();
@@ -40,7 +40,9 @@ export class ReviewOverlay extends Component {
       !mode ||
       !entry ||
       !leaf ||
-      (!force && (!isMarkdown || (viewFile ?? stateFile) !== entry.sourcePath))
+      !leaf.view.containerEl.isConnected ||
+      !isMarkdown ||
+      (viewFile ?? stateFile) !== entry.sourcePath
     ) {
       this.detach();
       return;

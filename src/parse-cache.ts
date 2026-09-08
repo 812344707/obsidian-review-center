@@ -36,6 +36,7 @@ export class ParseCache {
     parserVersion: number,
     settingsSignature: string,
     parse: () => ReviewSectionParseResult,
+    force = false,
   ): Promise<{ result: ReviewSectionParseResult; hit: boolean; contentHash: string }> {
     const contentHash = await sha256Text(markdown);
     if (!contentHash) return { result: parse(), hit: false, contentHash: "" };
@@ -43,7 +44,7 @@ export class ParseCache {
     const backend = await this.open();
     if (!backend) return { result: parse(), hit: false, contentHash };
     try {
-      const cached = await backend.get(key);
+      const cached = force ? undefined : await backend.get(key);
       if (cached && cached.contentHash === contentHash && cached.parserVersion === parserVersion &&
         cached.settingsSignature === settingsSignature) {
         return { result: structuredClone(cached.result), hit: true, contentHash };

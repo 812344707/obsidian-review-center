@@ -68,7 +68,9 @@ describe("review start disk I/O and coordination", () => {
     const h = harness(), overlay = { sync: vi.fn(), detach: vi.fn() };
     Reflect.set(h.plugin, "overlay", overlay);
     Reflect.set(h.plugin, "overlayMode", "note");
-    Reflect.set(h.plugin.app.workspace, "getMostRecentLeaf", () => ({}));
+    const leaf = {};
+    Reflect.set(h.plugin.app.workspace, "getMostRecentLeaf", () => leaf);
+    Reflect.set(h.plugin.app.workspace, "iterateAllLeaves", (callback: (leaf: object) => void) => callback(leaf));
     Reflect.get(h.plugin, "primeOverlayWhileOpening").call(h.plugin);
     expect(overlay.sync).toHaveBeenCalledOnce();
     h.plugin.onunload();

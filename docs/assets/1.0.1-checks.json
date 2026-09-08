@@ -1,0 +1,41 @@
+{
+  "version": "1.0.1",
+  "baseCommit": "dc9d3a39f097cad224a76521e7b95a3385a433d7",
+  "tests": {
+    "files": 37,
+    "passed": 255,
+    "newYorkCalendarTests": 14
+  },
+  "lintErrors": 0,
+  "existingDeprecationWarnings": 1,
+  "typescriptPassed": true,
+  "optimizerChecksPassed": true,
+  "runtimeMatchesNativeTestedBuild": true,
+  "mainSha256": "30b7e13225fa4203d82d117be0f100333ca90741d81ed47616cfca70a025791f",
+  "package": {
+    "version": "1.0.1",
+    "manifestAndLockAligned": true,
+    "runtimeUsesWebApis": true,
+    "documentationLinksChecked": 35,
+    "zipName": "review-center-1.0.1.zip",
+    "zipFilesChecked": 6,
+    "bytes": 402724,
+    "sha256": "8e2e0603131f7d5fce41fdc699eb3348b8c5cc21ace986221acf83a1f12f7d09",
+    "checksumsVerified": true
+  },
+  "nativeQa": {
+    "obsidianVersion": "1.13.7",
+    "platform": "macOS",
+    "repairButtonClickedInIsolatedVault": true,
+    "recordsVerifiedUnchanged": 1001,
+    "backupCreated": true,
+    "startAfterRepairPassed": true,
+    "closedTabRestartPassed": true,
+    "homeHasNoRatingBar": true,
+    "dailyVaultButtonVerified": true,
+    "dailyClosedTabRestartPassed": true,
+    "dailyExistingRecordsVerifiedUnchanged": 2158,
+    "dailyRatingExecuted": false,
+    "dailyRepairExecuted": false
+  }
+}

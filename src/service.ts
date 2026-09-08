@@ -29,6 +29,8 @@ import { cloneValue, createId, itemKey, localDayKey } from "./utils";
 import { groupsFor, normalizeSettings, resolveGroup, tagsMatch } from "./config";
 import { effectiveReviews } from "./activity";
 
+export interface VaultRepairResult { backupPath: string; records: number; issues: number; }
+
 export class ReviewService {
   records: SourceRecord[] = [];
   history: HistoryEvent[] = [];
@@ -67,6 +69,28 @@ export class ReviewService {
   ) {}
 
   refresh(onProgress?: ProgressReporter): Promise<boolean> { return this.enqueue(() => this.performRefresh(onProgress)); }
+
+  repair(onProgress?: ProgressReporter): Promise<VaultRepairResult> {
+    return this.runMaintenance(async () => {
+      this.setTimingActive(false);
+      onProgress?.({ percent: 0, message: "正在备份复习数据" });
+      await this.store.flush();
+      const stored = await this.scanner.loadStored();
+      const backupPath = await this.store.writeBackup({
+        schemaVersion: 4, exportedAt: new Date().toISOString(), pluginVersion: this.pluginVersion,
+        settings: cloneValue(this.getSettings()), records: stored.records, history: stored.history,
+      }, "pre-repair");
+      const result = await this.scanner.repair((progress) => onProgress?.({
+        ...progress, percent: 5 + Math.floor(progress.percent * 0.94),
+      }));
+      if (result.metadataReady === false) throw new Error("笔记正在同步、保存或更新索引。请等待完成后再次点击修复知识库；已有进度和备份保留。");
+      this.applyScanResult(result);
+      this.prepared = null;
+      await this.store.flush();
+      return { backupPath, records: this.records.length,
+        issues: this.records.filter((record) => record.warnings.length > 0 || record.sourceStatus === "parse-error" || record.sourceStatus === "deleted").length };
+    });
+  }
 
   refreshSource(path: string): Promise<void> {
     return this.enqueue(async () => {

@@ -36,6 +36,7 @@ export class VaultScanner {
   private indexedHashes = new Map<string, string>();
   private verifiedHashes = new Map<string, string>();
   private readonly parseCache: ParseCache;
+  private repairing = false;
 
   constructor(
     private readonly app: App,
@@ -134,7 +135,7 @@ export class VaultScanner {
     await progress.step(20, 20, 1, 1, "检查笔记和标签");
     // Metadata may lag behind vault events at startup or after a rename. Never
     // infer deletion or mint identities until every Markdown cache is available.
-    if (allMarkdown.some((file) => !this.app.metadataCache.getFileCache(file))) {
+    if (allMarkdown.some((file) => !this.app.metadataCache.getFileCache(file) || (this.repairing && this.pendingMetadata.has(file.path)))) {
       return { records: reconciled.records, history, conflicts: reconciled.conflicts, metadataReady: false };
     }
     // Identity/legacy-format writes can temporarily invalidate Obsidian's cache.
@@ -243,6 +244,15 @@ export class VaultScanner {
         resultRecords.push(record);
         await this.saveChangedRecord(record, snapshots);
       } else {
+        if (this.repairing) {
+          // A repair may run after a sync interruption. Keep missing sources'
+          // identities and schedules so a later sync/repair can reconnect them.
+          record.sourceStatus = "deleted";
+          record.warnings = ["暂未找到来源笔记，已保留复习进度。请等待同步完成后再次修复，或从备份核对原文。"];
+          resultRecords.push(record);
+          await this.saveChangedRecord(record, snapshots);
+          continue;
+        }
         const deleteEvents = this.deleteRecordItems(record);
         await this.store.appendHistory(deleteEvents);
         history.push(...deleteEvents);
@@ -257,6 +267,14 @@ export class VaultScanner {
       history,
       conflicts: reconciled.conflicts,
     };
+  }
+
+  async repair(onProgress?: ProgressReporter): Promise<ScanResult> {
+    this.repairing = true;
+    this.indexedHashes.clear();
+    this.verifiedHashes.clear();
+    try { return await this.scan(onProgress); }
+    finally { this.repairing = false; }
   }
 
   private async saveChangedRecord(record: SourceRecord, snapshots: Map<string, { signature: string; updatedAt: string }>): Promise<void> {
@@ -363,7 +381,7 @@ export class VaultScanner {
       cardRecognition: settings.cardGroups.map((group) => ({ id: group.id, tags: group.tags, recognition: group.recognition })),
     });
     return this.parseCache.getOrParse(sourceId, markdown, CARD_PARSER_VERSION, settingsSignature,
-      () => parseReviewCards(markdown, settings.reviewCalloutTypes));
+      () => parseReviewCards(markdown, settings.reviewCalloutTypes), this.repairing);
   }
 
   private createRecord(

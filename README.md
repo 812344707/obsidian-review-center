@@ -2,7 +2,7 @@
 
 在 Obsidian 原文中阅读和整理笔记，用问答或挖空复习知识点，通过 FSRS 安排下一次复习。整篇笔记和知识点使用独立的参数与进度。
 
-**当前版本：1.0.0 正式版。** [下载完整安装包](https://github.com/812344707/obsidian-review-center/releases/download/1.0.0/review-center-1.0.0.zip) · [发布页面](https://github.com/812344707/obsidian-review-center/releases/tag/1.0.0)。最低要求 Obsidian 1.13.0；插件内部 ID 保持 `review-center`，升级沿用现有设置和复习数据。
+**当前版本：1.0.1 正式版。** [下载完整安装包](https://github.com/812344707/obsidian-review-center/releases/download/1.0.1/review-center-1.0.1.zip) · [发布页面](https://github.com/812344707/obsidian-review-center/releases/tag/1.0.1)。最低要求 Obsidian 1.13.0；插件内部 ID 保持 `review-center`，升级沿用现有设置和复习数据。
 
 ## 开始使用
 
@@ -48,7 +48,7 @@
 
 插件不需要账号，不主动调用远程服务，不上传笔记或遥测数据，不读写知识库外的用户文件。原文中的远程图片、链接及知识库同步由 Obsidian 或用户已有工具处理；它们可能访问网络。参数优化模块已嵌入安装包，运行时无需下载。
 
-跨设备需同步复习数据目录；使用 Obsidian Sync 时启用其他文件类型，若同步配置还需同步插件设置。开始前等待同步完成。真实手机软键盘与跨设备并发同步仍需验收，已测环境及限制见 [1.0.0 验证记录](docs/1.0.0-validation.md) 和 [发行准备清单](docs/release-readiness-1.0.0.md)。
+跨设备需同步复习数据目录；使用 Obsidian Sync 时启用其他文件类型，若同步配置还需同步插件设置。开始前等待同步完成。真实手机软键盘与跨设备并发同步仍需验收，已测环境及限制见 [1.0.1 验证记录](docs/1.0.1-validation.md)。
 
 本版不含单卡独立标签、跨笔记移动卡片的进度迁移、自动制卡或后台手机通知。
 
@@ -58,7 +58,7 @@
 
 反馈请使用 [GitHub Issues](https://github.com/812344707/obsidian-review-center/issues)，提供设备、Obsidian／插件版本、复现步骤和不含隐私的最小示例。
 
-历次变化见 [更新记录](CHANGELOG.md)。1.0.0 的 [发布说明](docs/release-notes-1.0.0.md) 与 [发行记录](docs/release-readiness-1.0.0.md) 区分本地验证、实际设备验收和公开发行状态。
+历次变化见 [更新记录](CHANGELOG.md)。1.0.1 的 [发布说明](docs/release-notes-1.0.1.md)、[升级说明](docs/1.0.1-upgrade.md) 与 [验证记录](docs/1.0.1-validation.md) 说明变化、升级步骤及验证范围。
 
 ## 复用与许可
 

@@ -18,6 +18,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private folderDraft?: string;
   private displayDraft?: DisplayDraft;
   private migrating = false;
+  private repairMessage = "";
   constructor(app: App, private readonly host: ReviewCenterPlugin) { super(app, host); }
   showRecognition(mode: ReviewMode): void {
     this.page = "groups"; this.update();
@@ -32,7 +33,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [{
       name: "复习标签、数据与备份、显示",
-      aliases: ["笔记", "知识点", "标签", "数据目录", "迁移", "备份", "热力图", "启动", "review"],
+      aliases: ["笔记", "知识点", "标签", "数据目录", "迁移", "备份", "修复知识库", "重建索引", "热力图", "启动", "review"],
       render: (setting) => {
         // Keep the compact tabs and explicit Save while using native search.
         setting.settingEl.empty(); setting.settingEl.removeClass("setting-item");
@@ -148,6 +149,38 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("打开管理").onClick(() => this.openManagement()));
     new Setting(root).setName("中断的批量操作").setDesc("查看标签修改和重新排程的备份与进度，继续未完成的操作。")
       .addButton((b) => b.setButtonText("查看操作记录").onClick(() => this.host.openOperationHistory()));
+    this.renderRepair(root);
+  }
+
+  private renderRepair(root: HTMLElement): void {
+    new Setting(root).setName("修复知识库")
+      .setDesc("用于无法开始复习、笔记路径变化或复习清单异常。先自动备份，再重新核对本插件的标签、路径和卡片索引；保留评分与排程，无法确认的内容会提示核对。")
+      .addButton((button) => {
+        button.buttonEl.dataset.repairVault = "";
+        button.setButtonText("修复知识库").onClick(() => {
+          this.repairMessage = "";
+          void this.host.repairVault().then((result) => {
+            this.repairMessage = `已核对 ${result.records} 篇笔记。${result.issues ? `${result.issues} 篇需要在内容管理中核对。` : "复习进度已保留。"}修复前备份：${result.backupPath}`;
+          }).catch((error: unknown) => {
+            this.repairMessage = `修复未完成：${error instanceof Error ? error.message : String(error)}`;
+          }).finally(() => { this.updateRepairState(); });
+        });
+      });
+    root.createDiv({ cls: "review-settings-intro", text: this.repairMessage,
+      attr: { "data-repair-status": "", role: "status", "aria-live": "polite" } });
+    this.updateRepairState();
+  }
+
+  updateRepairState(): void {
+    const button = this.containerEl.querySelector<HTMLButtonElement>("[data-repair-vault]");
+    if (button) {
+      button.disabled = this.host.repairingVault || this.host.startingReview || this.host.preparation.state === "running" || this.host.service.maintenance || this.migrating;
+      button.textContent = this.host.repairingVault ? "正在修复…" : "修复知识库";
+      button.setAttribute("aria-busy", String(this.host.repairingVault));
+    }
+    const status = this.containerEl.querySelector<HTMLElement>("[data-repair-status]");
+    if (status) status.textContent = this.host.repairingVault
+      ? `${this.host.preparation.message}（${this.host.preparation.percent}%）` : this.repairMessage;
   }
 
   private renderDisplay(root: HTMLElement): void {
