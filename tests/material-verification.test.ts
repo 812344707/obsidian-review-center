@@ -44,6 +44,19 @@ describe("current material and cross-device progress verification", () => {
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(today); });
   afterEach(() => vi.useRealTimers());
 
+  it("flags supplementary edits while preserving the existing card identity and schedule", async () => {
+    const h = await harness(), before = structuredClone(h.records.get("source")!.cards["rv-one:qa"]);
+    h.file.content = h.file.content.replace("> ^rv-one", "> Extra: ![[图.png]]\n> ^rv-one");
+    await h.service.refresh();
+    const after = h.records.get("source")!.cards["rv-one:qa"];
+    expect(after.content.extra).toBe("![[图.png]]");
+    expect(after.status).toBe("pending-change");
+    expect(after.schedule).toEqual(before.schedule);
+    expect(after.acceptedHash).toBe(before.acceptedHash);
+    expect(after.pendingHash).not.toBe(before.acceptedHash);
+    expect(h.history.some(event => event.action === "delete")).toBe(false);
+  });
+
   it("updates only the authored source, keeps prior schedules and creates stable new card identities", async () => {
     const h = await harness(), original = structuredClone(h.records.get("source")!);
     h.file.content += "\n> [!review]\n> 问:: 新问题\n> 答:: 新答案\n";

@@ -36,7 +36,7 @@ export function cardAuthoringEdit(markdown: string, from: number, to: number, ac
     const at = owner ? Math.min(markdown.length, offsets[owner.end - 1] + lines[owner.end - 1].length) :
       Math.min(markdown.length, offsets[last] + lines[last].length);
     const text = action === "standard-qa"
-      ? "\n\nSTART\nBasic\nFront: \nBack: \nEND\n"
+      ? "\n\nSTART\nBasic\nFront: \nBack: \nExtra: \nEND\n"
       : "\n\nSTART\nCloze\nText: {{c1::}}\nExtra: \nEND\n";
     const marker = action === "standard-qa" ? "Front: " : "{{c1::";
     return result(at, at, text, text.indexOf(marker) + marker.length);

@@ -16,7 +16,7 @@ const STANDARD_START_PATTERN = /^\s*START\s*$/i;
 const STANDARD_END_PATTERN = /^\s*END\s*$/i;
 const STANDARD_TYPE_PATTERN = /^\s*(Basic|Cloze)\s*$/i;
 const HIDDEN_ID_PATTERN = /^\s*<!--\s*review-center-id:\s*(rv-[a-z0-9-]+)\s*-->\s*$/i;
-export const CARD_PARSER_VERSION = 2;
+export const CARD_PARSER_VERSION = 3;
 
 interface LineRange {
   start: number;
@@ -144,7 +144,7 @@ function parseQuestionAnswerCards(
     const contentEnd = idInfo ? trimTrailingBlankLines(lines, answerLine, idInfo.line) : trimmedEnd;
     const answerFirstLine = lines[answerLine].match(ANSWER_PATTERN)?.[1] ?? "";
     const answerTail = lines.slice(answerLine + 1, contentEnd);
-    const answer = [answerFirstLine, ...answerTail].join("\n").trim();
+    const { text: answer, extra } = splitExtra([answerFirstLine, ...answerTail]);
     if (answer.length === 0) {
       warnings.push(`第 ${questionStart + 1} 行的问答卡答案为空。`);
       index = Math.max(blockEnd, index + 1);
@@ -155,6 +155,7 @@ function parseQuestionAnswerCards(
     const content: ReviewContent = {
       question,
       answer,
+      ...(extra ? { extra } : {}),
       raw,
       sourceStartLine: questionStart,
       sourceEndLine: Math.max(questionStart, contentEnd - 1),
@@ -162,7 +163,7 @@ function parseQuestionAnswerCards(
     cards.push({
       kind: "qa",
       blockId: idInfo?.id,
-      hash: hashText(`qa\n${question}\n${answer}`),
+      hash: qaHash(question, answer, extra),
       content,
       insertIdAfterLine: Math.max(questionStart, contentEnd - 1),
     });
@@ -182,7 +183,7 @@ function parseClozeCards(
   for (const range of collectParagraphs(lines, start, end, consumedLines)) {
     const idInfo = extractTrailingBlockId(lines, range.start, range.end);
     const contentEnd = idInfo ? trimTrailingBlankLines(lines, range.start, idInfo.line) : range.end;
-    const raw = lines.slice(range.start, contentEnd).join("\n").trim();
+    const { text: raw, extra } = splitExtra(lines.slice(range.start, contentEnd));
     const searchable = maskCode(raw);
     const clozes = [...searchable.matchAll(CLOZE_PATTERN)];
     if (clozes.length === 0) continue;
@@ -198,6 +199,7 @@ function parseClozeCards(
         question: raw,
         answer: raw,
         raw,
+        ...(extra ? { extra } : {}),
         sourceStartLine: range.start,
         sourceEndLine: Math.max(range.start, contentEnd - 1),
       };
@@ -205,7 +207,7 @@ function parseClozeCards(
         kind: "cloze",
         blockId: idInfo?.id,
         clozeIndex,
-        hash: hashText(`cloze:${clozeIndex}\n${raw}`),
+        hash: hashText(`cloze:${clozeIndex}\n${raw}` + (extra ? `\nextra\n${extra}` : "")),
         content,
         insertIdAfterLine: Math.max(range.start, contentEnd - 1),
       });
@@ -523,9 +525,9 @@ function parseStandardCards(
       const backLines = bodyLines.slice(backAt);
       backLines[0] = backLines[0].replace(/^\s*Back:\s*/i, "");
       const question = trimBlankLines(frontLines).join("\n").trim();
-      const answer = trimBlankLines(backLines).join("\n").trim();
+      const { text: answer, extra } = splitExtra(backLines);
       if (!question || !answer) warnings.push(`第 ${start + 1} 行的 Basic 卡片问题或答案为空。`);
-      if (question && answer) cards.push(makeQaDraft(question, answer, start, end, idInfo?.id, end - 1, "hidden"));
+      if (question && answer) cards.push(makeQaDraft(question, answer, start, end, idInfo?.id, end - 1, "hidden", extra));
     } else {
       const extraAt = findFieldLine(bodyLines, /^\s*Extra:\s*/i);
       const textLines = bodyLines.slice(0, extraAt < 0 ? bodyLines.length : extraAt);
@@ -575,10 +577,10 @@ function parseDirectQuestionAnswerCards(
     const answerLines = visible.slice(answerLine, end).map((line, offset) =>
       idInfo?.line === answerLine + offset ? "" : line);
     answerLines[0] = answerLines[0].replace(DIRECT_ANSWER_PATTERN, "$1");
-    const answer = trimBlankLines(answerLines).join("\n").trim();
+    const { text: answer, extra } = splitExtra(answerLines);
     if (!question || !answer) warnings.push(`第 ${start + 1} 行的简写问答卡问题或答案为空。`);
     if (question && answer) cards.push(makeQaDraft(question, answer, start, Math.max(answerLine, end - 1), idInfo?.id,
-      Math.max(answerLine, idInfo ? idInfo.line - 1 : end - 1), "hidden"));
+      Math.max(answerLine, idInfo ? idInfo.line - 1 : end - 1), "hidden", extra));
     for (let line = start; line < end; line += 1) consumed.add(line);
     start = Math.max(start, end - 1);
   }
@@ -601,22 +603,36 @@ function parseDirectClozeCards(
       consumed.add(range.end);
     }
     const contentEnd = idInfo && idInfo.line < range.end ? idInfo.line : range.end;
-    const text = visible.slice(range.start, contentEnd).join("\n").trim();
+    const { text, extra } = splitExtra(visible.slice(range.start, contentEnd));
     if (!CLOZE_PATTERN.test(maskCode(text))) { CLOZE_PATTERN.lastIndex = 0; continue; }
     CLOZE_PATTERN.lastIndex = 0;
     found.value = true;
     addClozeDrafts(cards, warnings, text, range.start, Math.max(range.start, contentEnd - 1), idInfo?.id,
-      Math.max(range.start, contentEnd - 1), "hidden");
+      Math.max(range.start, contentEnd - 1), "hidden", extra);
   }
 }
 
 function makeQaDraft(
   question: string, answer: string, start: number, end: number, blockId: string | undefined,
-  insertIdAfterLine: number, insertIdStyle: "hidden",
+  insertIdAfterLine: number, insertIdStyle: "hidden", extra = "",
 ): ParsedCardDraft {
-  return { kind: "qa", blockId, hash: hashText(`qa\n${question}\n${answer}`),
-    content: { question, answer, raw: `Q: ${question}\nA: ${answer}`, sourceStartLine: start, sourceEndLine: end },
+  return { kind: "qa", blockId, hash: qaHash(question, answer, extra),
+    content: { question, answer, raw: `Q: ${question}\nA: ${answer}`, ...(extra ? { extra } : {}), sourceStartLine: start, sourceEndLine: end },
     insertIdAfterLine, insertIdStyle };
+}
+
+// Keep existing hashes unchanged for cards without supplementary content.
+function qaHash(question: string, answer: string, extra: string): string {
+  return hashText(`qa\n${question}\n${answer}` + (extra ? `\nextra\n${extra}` : ""));
+}
+
+/** Only a standalone field outside code begins supplementary content. */
+function splitExtra(lines: string[]): { text: string; extra: string } {
+  const at = findFieldLine(lines, /^\s*Extra:\s*/i);
+  if (at < 0) return { text: lines.join("\n").trim(), extra: "" };
+  const extraLines = lines.slice(at);
+  extraLines[0] = extraLines[0].replace(/^\s*Extra:\s*/i, "");
+  return { text: lines.slice(0, at).join("\n").trim(), extra: extraLines.join("\n").trim() };
 }
 
 function addClozeDrafts(

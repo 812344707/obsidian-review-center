@@ -1,6 +1,6 @@
 {
   "name": "obsidian-review-center",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Mobile-first Obsidian review plugin powered by FSRS.",
   "main": "main.js",
   "type": "module",

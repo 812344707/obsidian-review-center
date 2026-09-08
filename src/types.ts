@@ -21,7 +21,7 @@ export interface ReviewContent {
   question: string;
   answer: string;
   raw: string;
-  /** Optional back-of-card note for standard Cloze blocks. */
+  /** Optional Markdown rendered only after the answer is revealed. */
   extra?: string;
   sourceStartLine: number;
   sourceEndLine: number;

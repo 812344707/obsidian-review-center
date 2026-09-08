@@ -302,15 +302,15 @@ export class ReviewCenterView extends ItemView {
           front.addClass("is-answer-visible");
           await MarkdownRenderer.render(this.app, renderCloze(entry.item.content.raw, entry.item.clozeIndex ?? 1, true), front, entry.sourcePath, this);
         }
-        if (entry.item.content.extra) {
-          card.createDiv({ cls: "review-card-divider", text: "补充" });
-          const extra = card.createDiv({ cls: "review-card-answer markdown-rendered" });
-          await MarkdownRenderer.render(this.app, entry.item.content.extra, extra, entry.sourcePath, this);
-        }
       } else {
         card.createDiv({ cls: "review-card-divider", text: "答案" });
         const answer = card.createDiv({ cls: "review-card-answer markdown-rendered" });
         await MarkdownRenderer.render(this.app, entry.item.content.answer, answer, entry.sourcePath, this);
+      }
+      if (entry.item.content.extra) {
+        card.createDiv({ cls: "review-card-divider", text: "补充" });
+        const extra = card.createDiv({ cls: "review-card-answer markdown-rendered" });
+        await MarkdownRenderer.render(this.app, entry.item.content.extra, extra, entry.sourcePath, this);
       }
       if (version === this.renderVersion) this.renderGrades(card, entry);
     };

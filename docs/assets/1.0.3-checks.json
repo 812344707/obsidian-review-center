@@ -1,0 +1,36 @@
+{
+  "version": "1.0.3",
+  "baseCommit": "6c3d92cea17dd3584867c0fd9a14f4cfbb105392",
+  "tests": {
+    "files": 40,
+    "passed": 279
+  },
+  "lintErrors": 0,
+  "existingDeprecationWarnings": 1,
+  "typescriptPassed": true,
+  "optimizerChecksPassed": true,
+  "runtimeMatchesNativeTestedBuild": true,
+  "mainSha256": "079f38c2ac7dec7717354bb27f2ae84439df28455683d5456d84c698177d5e7c",
+  "manifestSha256": "43583ddc2e77bebb264533bef6169423d0bf744385be0be100e6047f2e994988",
+  "stylesSha256": "4a58dd93da3f814fc32126b0a30203f2abd8eebbae7eeeff2514a6f4ae41e081",
+  "package": {
+    "version": "1.0.3",
+    "manifestAndLockAligned": true,
+    "runtimeUsesWebApis": true,
+    "documentationLinksChecked": 41,
+    "zipName": "review-center-1.0.3.zip",
+    "zipFilesChecked": 6,
+    "bytes": 403545,
+    "sha256": "ec4a84039b0383fd5f6e8f262c38c8841d6f76c2794fa15a210e6d8003c73bee",
+    "repeatSha256": "ec4a84039b0383fd5f6e8f262c38c8841d6f76c2794fa15a210e6d8003c73bee",
+    "checksumsVerified": true
+  },
+  "nativeQa": {
+    "platform": "macOS",
+    "syntheticFixtures": true,
+    "formats": 6,
+    "assertions": 89,
+    "errors": 0,
+    "physicalMobileDevicesTested": false
+  }
+}

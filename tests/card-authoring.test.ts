@@ -64,7 +64,7 @@ describe("quick card authoring", () => {
 
   it("inserts standard Basic and Cloze templates and rejects cloze inside Q/A content", () => {
     const basic = edit("正文", 2, 2, "standard-qa");
-    expect(basic.text).toContain("START\nBasic\nFront: \nBack: \nEND");
+    expect(basic.text).toContain("START\nBasic\nFront: \nBack: \nExtra: \nEND");
     expect(basic.text.slice(basic.cursor - 7, basic.cursor)).toBe("Front: ");
     const cloze = edit("正文", 2, 2, "standard-cloze");
     expect(cloze.text).toContain("START\nCloze\nText: {{c1::}}\nExtra: \nEND");
