@@ -1,6 +1,6 @@
 {
   "name": "obsidian-review-center",
-  "version": "0.4.6",
+  "version": "1.0.0",
   "description": "Mobile-first Obsidian review plugin powered by FSRS.",
   "main": "main.js",
   "type": "module",
@@ -9,7 +9,11 @@
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run test && npm run build"
+    "check": "npm run lint && npm test && npm run build && npm run check:release",
+    "lint": "eslint src",
+    "check:release": "node scripts/check-release.mjs",
+    "check:optimizer": "node scripts/check-optimizer.mjs && node scripts/check-optimizer.mjs --notes",
+    "package": "node scripts/package-release.mjs && node scripts/check-release.mjs --package"
   },
   "keywords": [
     "obsidian",
@@ -22,10 +26,23 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@eslint/json": "^0.14.0",
     "@types/node": "^22.15.17",
     "esbuild": "0.28.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.2",
     "obsidian": "1.13.1",
     "typescript": "^5.8.3",
+    "typescript-eslint": "^8.70.0",
     "vitest": "4.1.11"
+  },
+  "overrides": {
+    "eslint-plugin-obsidianmd": {
+      "obsidian": "$obsidian"
+    }
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

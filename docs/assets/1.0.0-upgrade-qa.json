@@ -1,0 +1,18 @@
+{
+  "checks": [
+    "Released 0.4.6 program files upgraded to the 1.0.0 candidate",
+    "All 0.4.6 settings and default parameters are unchanged",
+    "All old source IDs, card IDs, statuses and schedules are unchanged",
+    "All old create and rating events are retained exactly",
+    "Upgrade does not rewrite source Markdown",
+    "The old name-keyed temporary queue is intentionally not imported",
+    "Start reconstructs the remaining queue from preserved schedules",
+    "Upgraded settings render with the new native API"
+  ],
+  "passed": 8,
+  "version": "1.13.7",
+  "records": 2,
+  "cards": 3,
+  "reviews": 2,
+  "existingDataFilesHashUnchanged": 4
+}

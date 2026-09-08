@@ -1,0 +1,35 @@
+name: Check release candidate
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Verify calendar-day scheduling across daylight saving time
+        run: npx vitest run tests/note-daily.test.ts
+        env:
+          TZ: America/New_York
+      - run: npm run check:optimizer
+      - run: npm run package
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: candidate-${{ matrix.os }}
+          path: |
+            release/*/review-center-*.zip
+            release/*/SHA256SUMS
+            release/*/verification.json
+          if-no-files-found: error

@@ -1,3 +1,4 @@
+import { isSourceId } from "./validation";
 import { App, TFile, getAllTags } from "obsidian";
 import { createHistoryEvent, reconcileRecordsWithHistory } from "./history";
 import { CARD_PARSER_VERSION, convertLegacySection, insertMissingBlockIds, parseReviewCallouts, parseReviewCards } from "./parser";
@@ -19,6 +20,7 @@ import { verifySource, type VerifiedSource } from "./source-verifier";
 interface IdentifiedFile {
   file: TFile;
   reviewId: string;
+  tags: string[];
 }
 
 export interface ScanResult {
@@ -108,7 +110,7 @@ export class VaultScanner {
     if (!resolveGroup(record.tags, settings.cardGroups, file.path)) throw new Error("此笔记未纳入知识点复习，请在“复习标签”中选择知识点标签，并给笔记打上该标签。");
     this.knownRevisions = collectLatestRevisions(verified.history);
     const events: HistoryEvent[] = [];
-    const updated = await this.scanFile({ file, reviewId: record.reviewId }, record, events);
+    const updated = await this.scanFile({ file, reviewId: record.reviewId, tags: record.tags }, record, events);
     await this.store.appendHistory(events);
     await this.store.saveRecord(updated);
     return { record: updated, history: [...verified.history, ...events] };
@@ -135,12 +137,23 @@ export class VaultScanner {
     if (allMarkdown.some((file) => !this.app.metadataCache.getFileCache(file))) {
       return { records: reconciled.records, history, conflicts: reconciled.conflicts, metadataReady: false };
     }
+    // Identity/legacy-format writes can temporarily invalidate Obsidian's cache.
+    // Keep this scan's validated scope while those writes are being indexed.
+    const scanTags = new Map(allMarkdown.map((file) => {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) throw new Error("笔记索引正在更新，请稍后再次整理数据。");
+      return [file, [...(getAllTags(cache) ?? [])]];
+    }));
     const outsideIdentityPaths = this.collectKnownIdentityPaths(allMarkdown, recordById);
     const watchedFiles = allMarkdown.filter((file) => {
       if (pathIsInside(file.path, settings.dataFolder)) return false;
-      const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
+      const tags = scanTags.get(file)!;
       return resolveGroup(tags, settings.noteGroups, file.path) || resolveGroup(tags, settings.cardGroups, file.path);
     });
+    for (const file of watchedFiles) {
+      const id = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
+      if (id && !isSourceId(id)) throw new Error(`笔记“${file.path}”的 review_id 无效，整理已停止。请从备份核对原标识，不要删除进度文件。`);
+    }
     const migrationWarnings = new Map<string, string[]>();
     const blockedIdentityPaths = new Set<string>();
     const identityPaths = new Map<string, string[]>();
@@ -156,7 +169,7 @@ export class VaultScanner {
       if (pathIsInside(file.path, settings.dataFolder)) continue;
       const known = recordById.get(readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter) ?? "") ??
         recordByPath.get(file.path);
-      const tags = getAllTags(this.app.metadataCache.getFileCache(file)!) ?? [];
+      const tags = scanTags.get(file)!;
       if (!known && !resolveGroup(tags, settings.cardGroups, file.path)) continue;
       try {
         const original = await this.app.vault.read(file);
@@ -195,7 +208,7 @@ export class VaultScanner {
         migrationWarnings.set(file.path, ["复习块迁移未完成，原有进度保留：" + (error instanceof Error ? error.message : String(error))]);
       }
     }
-    const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths,
+    const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths, scanTags,
       (done, total) => progress.step(45, 55, done, total, `核对笔记标识 ${done}/${total}`));
     const activeIds = new Set<string>();
     const resultRecords: SourceRecord[] = [];
@@ -259,6 +272,7 @@ export class VaultScanner {
     files: TFile[],
     records: Map<string, SourceRecord>,
     owners: Map<string, string>,
+    tags: Map<TFile, string[]>,
     onProgress?: (done: number, total: number) => Promise<void>,
   ): Promise<IdentifiedFile[]> {
     const entries: IdentifiedFile[] = [];
@@ -269,7 +283,7 @@ export class VaultScanner {
         reviewId = createId("note");
         await this.setReviewId(file, reviewId);
       }
-      entries.push({ file, reviewId });
+      entries.push({ file, reviewId, tags: tags.get(file)! });
       await onProgress?.(entries.length, files.length);
     }
 
@@ -301,8 +315,7 @@ export class VaultScanner {
   ): Promise<SourceRecord> {
     const settings = this.getSettings();
     const now = new Date();
-    const cache = this.app.metadataCache.getFileCache(entry.file);
-    const tags = cache ? (getAllTags(cache) ?? []) : [];
+    const tags = entry.tags;
     const cardGroup = resolveGroup(tags, settings.cardGroups, entry.file.path);
     let parsed: ReturnType<typeof parseReviewCards> | undefined;
     let scannedMarkdown = "";
@@ -539,10 +552,12 @@ export class VaultScanner {
 
   private async ensureReviewId(file: TFile): Promise<string> {
     const cached = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
+    if (cached && !isSourceId(cached)) throw new Error(`笔记“${file.path}”的 review_id 无效，请核对原标识。`);
     if (cached) return cached;
     let reviewId = createId("note");
     await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
       reviewId = readReviewId(frontmatter) ?? reviewId;
+      if (!isSourceId(reviewId)) throw new Error(`笔记“${file.path}”的 review_id 无效，请核对原标识。`);
       Reflect.set(frontmatter, "review_id", reviewId);
     });
     return reviewId;

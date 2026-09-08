@@ -77,24 +77,24 @@ export class ParseCache {
 }
 
 export async function sha256Text(value: string): Promise<string> {
-  if (!globalThis.crypto?.subtle || typeof TextEncoder === "undefined") return "";
+  if (typeof crypto === "undefined" || !crypto.subtle || typeof TextEncoder === "undefined") return "";
   const bytes = new TextEncoder().encode(value.replace(/\r\n/g, "\n"));
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function request<T>(value: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     value.onsuccess = () => resolve(value.result);
-    value.onerror = () => reject(value.error);
+    value.onerror = () => reject(value.error ?? new Error("解析缓存读取失败。"));
   });
 }
 
 function transactionDone(transaction: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
+    transaction.onerror = () => reject(transaction.error ?? new Error("解析缓存事务失败。"));
+    transaction.onabort = () => reject(transaction.error ?? new Error("解析缓存事务已取消。"));
   });
 }
 
@@ -108,7 +108,10 @@ function openIndexedDb(): Promise<ParseCacheBackend | null> {
     opening.onsuccess = () => {
       const database = opening.result;
       resolve({
-        get: (key) => request<ParseCacheEntry | undefined>(database.transaction(STORE_NAME).objectStore(STORE_NAME).get(key)),
+        get: async (key) => {
+          const value: unknown = await request<unknown>(database.transaction(STORE_NAME).objectStore(STORE_NAME).get(key));
+          return value as ParseCacheEntry | undefined;
+        },
         put: async (entry) => {
           const transaction = database.transaction(STORE_NAME, "readwrite");
           transaction.objectStore(STORE_NAME).put(entry);

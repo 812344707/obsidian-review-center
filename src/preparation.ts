@@ -16,7 +16,7 @@ export class PreparationTracker {
     this.percent = Math.max(this.percent, Math.min(99, Math.floor(from + (to - from) * (total ? completed / total : 1))));
     this.report?.({ percent: this.percent, message });
     if (this.report && Date.now() - this.yieldedAt >= 16) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       this.yieldedAt = Date.now();
     }
   }

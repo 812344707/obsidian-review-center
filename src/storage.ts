@@ -6,6 +6,7 @@ import type {
   SourceRecord,
 } from "./types";
 import { createId, hashText, localDayKey } from "./utils";
+import { assertHistoryEvent, assertSourceRecord, isSourceId } from "./validation";
 
 export class ReviewStore {
   private writeChains = new Map<string, Promise<void>>();
@@ -68,7 +69,10 @@ export class ReviewStore {
     const path = this.recordPath(reviewId);
     if (!(await this.app.vault.adapter.exists(path))) return null;
     try {
-      return JSON.parse(await this.app.vault.adapter.read(path)) as SourceRecord;
+      const record: unknown = JSON.parse(await this.app.vault.adapter.read(path));
+      assertSourceRecord(record);
+      if (record.reviewId !== reviewId) throw new Error("进度文件与来源标识不一致，请核对备份。");
+      return record;
     } catch (error) {
       if (strict) throw error;
       console.error(`[渐进式复习] 无法读取记录 ${path}`, error);
@@ -77,6 +81,7 @@ export class ReviewStore {
   }
 
   async saveRecord(record: SourceRecord): Promise<void> {
+    assertSourceRecord(record);
     const path = this.recordPath(record.reviewId);
     await this.ensureFolder(parentPath(path));
     await this.serializeWrite(path, async () => {
@@ -95,9 +100,12 @@ export class ReviewStore {
     let done = 0;
     for (const path of files) {
       try {
-        records.push(JSON.parse(await this.app.vault.adapter.read(path)) as SourceRecord);
+        const record: unknown = JSON.parse(await this.app.vault.adapter.read(path));
+        assertSourceRecord(record);
+        records.push(record);
       } catch (error) {
-        console.error(`[渐进式复习] 跳过损坏的记录 ${path}`, error);
+        console.error("[渐进式复习] 复习记录无法读取", path, error);
+        throw new Error(`复习记录尚未完整读取，请等待同步完成或核对备份：${path}`);
       }
       await onProgress?.(++done, files.length);
     }
@@ -106,6 +114,7 @@ export class ReviewStore {
 
   async appendHistory(events: HistoryEvent[]): Promise<void> {
     if (events.length === 0) return;
+    events.forEach(assertHistoryEvent);
     const month = localDayKey(new Date()).slice(0, 7);
     const folder = normalizePath(`${this.historyFolder()}/${month}`);
     await this.ensureFolder(folder);
@@ -120,7 +129,7 @@ export class ReviewStore {
     });
   }
 
-  async loadAllHistory(onProgress?: (done: number, total: number) => Promise<void>, strict = false): Promise<HistoryEvent[]> {
+  async loadAllHistory(onProgress?: (done: number, total: number) => Promise<void>, strict = true): Promise<HistoryEvent[]> {
     const files = (await this.listFilesRecursively(this.historyFolder())).filter((file) => file.endsWith(".jsonl"));
     const events: HistoryEvent[] = [];
     let done = 0;
@@ -136,8 +145,9 @@ export class ReviewStore {
       for (const line of text.split("\n")) {
         if (line.trim() === "") continue;
         try {
-          const event = JSON.parse(line) as HistoryEvent;
-          if (event.schemaVersion === 1 && event.eventId) events.push(event);
+          const event: unknown = JSON.parse(line);
+          assertHistoryEvent(event);
+          events.push(event);
         } catch (error) {
           if (strict) throw new Error(`评分历史尚未完整读取，请等待同步完成后重试：${path}`);
           console.error(`[渐进式复习] 跳过损坏的历史行 ${path}`, error);
@@ -149,6 +159,7 @@ export class ReviewStore {
   }
 
   async replaceHistory(events: HistoryEvent[]): Promise<void> {
+    events.forEach(assertHistoryEvent);
     const files = await this.listFilesRecursively(this.historyFolder());
     for (const path of files.filter((file) => file.endsWith(".jsonl"))) {
       await this.app.vault.adapter.remove(path);
@@ -187,13 +198,14 @@ export class ReviewStore {
 
   async readBackup(path: string): Promise<FullBackup> {
     const normalized = normalizePath(path);
-    if (!normalized.startsWith(`${this.exportsFolder()}/`)) {
+    if (!normalized.startsWith(`${this.exportsFolder()}/`) || normalized.split("/").some(part => part === "." || part === "..")) {
       throw new Error("只能从渐进式复习的导出目录恢复备份。");
     }
     return JSON.parse(await this.app.vault.adapter.read(normalized)) as FullBackup;
   }
 
   recordPath(reviewId: string): string {
+    if (!isSourceId(reviewId)) throw new Error("笔记标识无效，未访问复习记录。请核对 review_id。");
     const shard = reviewId.replace(/[^a-z0-9]/gi, "").slice(0, 2).toLowerCase() || "xx";
     return normalizePath(`${this.recordsFolder()}/${shard}/${reviewId}.json`);
   }

@@ -5,6 +5,7 @@ import type { ReviewCenterSettings, ReviewScope } from "./types";
 import { normalizeTags, parseTags, tagMatches } from "./config";
 import { cloneValue, createId, pathIsInside } from "./utils";
 import { TagInput } from "./inputs";
+import { isObject, isStringList } from "./validation";
 export interface TagOperation { from: string; to?: string }
 export interface TagFileChange {
   path: string; original: string; next: string; selected: boolean; changes: string[];
@@ -23,10 +24,10 @@ export function transformTags(markdown: string, cache: Pick<CachedMetadata, "tag
   if (/^(?:\uFEFF)?---\r?\n/.test(markdown) && !info.exists) throw new Error("笔记属性没有正确结束，已跳过。");
   const document = info.exists ? parseDocument(info.frontmatter) : undefined;
   if (document?.errors.length) throw new Error("笔记属性无法解析，已跳过。");
-  const properties = document?.toJS({ maxAliasCount: 100 });
-  if (properties != null && (typeof properties !== "object" || Array.isArray(properties))) throw new Error("笔记属性不是键值列表，已跳过。");
+  const properties: unknown = document?.toJS({ maxAliasCount: 100 });
+  if (properties != null && !isObject(properties)) throw new Error("笔记属性不是键值列表，已跳过。");
   const property = properties?.tags;
-  if (property != null && typeof property !== "string" && !(Array.isArray(property) && property.every((v) => typeof v === "string"))) throw new Error("tags 属性不是文字或文字列表，已跳过。");
+  if (property != null && typeof property !== "string" && !isStringList(property)) throw new Error("tags 属性不是文字或文字列表，已跳过。");
   const values: string[] = typeof property === "string" ? property.split(/[\s,，]+/).filter(Boolean) : property ?? [];
   let changedProperty = false;
   const mapped = values.flatMap((tag) => {
@@ -146,9 +147,9 @@ export class TagOperationModal extends Modal {
   onOpen(): void {
     this.modalEl.addClass("review-tag-operation-modal"); this.titleEl.setText(this.operation.to === undefined ? "删除标签" : "重命名标签");
     this.contentEl.createEl("p", { text: `整个知识库中的 #${this.operation.from} 及子标签。属性与正文标签同步修改；删除标签不会删除笔记。` });
-    let execute: ButtonComponent;
+    let execute: ButtonComponent | undefined;
     const preview = this.contentEl.createDiv();
-    const invalidate = () => { this.previewVersion++; this.files = []; preview.empty(); if (execute) execute.setDisabled(true); };
+    const invalidate = () => { this.previewVersion++; this.files = []; preview.empty(); execute?.setDisabled(true); };
     if (this.operation.to !== undefined) {
       const row = new Setting(this.contentEl).setName("新标签");
       this.input = new TagInput(this.app, row.controlEl, [], invalidate, "新标签");
@@ -161,7 +162,7 @@ export class TagOperationModal extends Modal {
       if (this.busy) return;
       void (async () => {
         try {
-          this.busy = true; b.setDisabled(true); execute.setDisabled(true);
+          this.busy = true; b.setDisabled(true); execute?.setDisabled(true);
           if (this.input) { const values = this.input.values(); if (values.length !== 1) throw new Error("请选择一个新标签。"); this.operation.to = values[0]; }
           this.operation = validateTagOperation(this.operation);
           const version = this.previewVersion;
@@ -178,7 +179,7 @@ export class TagOperationModal extends Modal {
             title.createSpan({ text: file.path });
             row.createEl("pre", { text: file.error ?? file.changes.join("\n") });
           }
-          execute.setDisabled(false); message.setText("确认后先备份，再执行以上更改。");
+          execute?.setDisabled(false); message.setText("确认后先备份，再执行以上更改。");
         } catch (e) { message.setText(String(e)); } finally { this.busy = false; b.setDisabled(false); }
       })();
     }));

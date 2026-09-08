@@ -56,7 +56,7 @@ export function cardAuthoringEdit(markdown: string, from: number, to: number, ac
     const n = Math.max(0, ...numbers) + 1;
     // Avoid nesting a new cloze inside an existing one when only its answer is selected.
     for (const match of markdown.matchAll(/\{\{c\d+::[\s\S]*?\}\}/g)) {
-      if (from < match.index! + match[0].length && to > match.index!) throw new Error("这段文字已经是填空，请另选文字。");
+      if (from < match.index + match[0].length && to > match.index) throw new Error("这段文字已经是填空，请另选文字。");
     }
     if (owner) return result(from, to, `{{c${n}::${selected}}}`);
     if (lines.slice(first, last + 1).some((l) => /^\s*(?:>|```|~~~|---\s*$|\^rv-)/.test(l))) {

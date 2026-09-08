@@ -1,4 +1,4 @@
-Third-party licenses bundled with Review Center 0.4.0
+Third-party licenses bundled with Progressive Review (渐进式复习)
 
 
 ts-fsrs 5.4.1

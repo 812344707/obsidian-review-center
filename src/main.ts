@@ -1,3 +1,5 @@
+import { readLocalState, writeLocalState } from "./local-state";
+import { isObject, isReviewSession, isSourceId, isUndoEntry } from "./validation";
 import {
   MarkdownView,
   Modal,
@@ -64,8 +66,11 @@ export default class ReviewCenterPlugin extends Plugin {
   private tickBusy = false;
   private schemaUpgrade = false;
   private tickSignature = "";
+  private unloaded = false;
+  private deferredTimers = new Set<number>();
 
   async onload(): Promise<void> {
+    this.unloaded = false;
     await this.loadSettings();
     this.optionsWorkspace = new OptionsWorkspace(this);
     const deviceId = this.getOrCreateDeviceId();
@@ -99,6 +104,9 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloaded = true;
+    for (const timer of this.deferredTimers) window.clearTimeout(timer);
+    this.deferredTimers.clear();
     for (const timer of this.authoringTimers.values()) window.clearTimeout(timer);
     this.service?.setTimingActive(false);
     this.overlay?.detach();
@@ -236,7 +244,9 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   async openReviewCenter(showDashboard = true): Promise<void> {
+    if (this.unloaded) return;
     await this.enableFileExplorerAutoReveal();
+    if (this.unloaded) return;
     if (this.overlayMode) this.rememberActiveSourceLeaf();
     this.showDashboard = showDashboard;
     this.service.setTimingActive(!showDashboard && !document.hidden);
@@ -443,7 +453,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   getOverlayMode(): OverlayMode | null {
-    return this.overlayMode;
+    return this.unloaded ? null : this.overlayMode;
   }
 
   previewCurrent(): ReturnType<ReviewService["preview"]> | null {
@@ -515,9 +525,15 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async initializeAfterLayout(): Promise<void> {
+    if (this.unloaded) return;
     try { await this.ensureLoaded(); await this.renderOpenViews(); }
-    catch (error) { new Notice(`读取复习清单失败：${errorMessage(error)}`); }
-    for (const { id, data } of await this.store.loadJobs<OperationJob>()) {
+    catch (error) { new Notice(`读取复习清单失败：${errorMessage(error)}`); return; }
+    if (this.unloaded) return;
+    let jobs: Array<{ id: string; data: OperationJob }>;
+    try { jobs = await this.store.loadJobs<OperationJob>(); }
+    catch (error) { new Notice(`读取操作记录失败：${errorMessage(error)}`); return; }
+    for (const { id, data } of jobs) {
+      if (this.unloaded) return;
       if (data.kind === "reschedule" && data.state === "pending") {
         try { await runRescheduleJob(this, id, data); }
         catch (e) { new Notice("未完成的重新排程需要处理：" + String(e), 15000); }
@@ -527,14 +543,16 @@ export default class ReviewCenterPlugin extends Plugin {
     if (activeView && activeView.file?.path === this.service.currentEntry()?.sourcePath) {
       this.sourceLeaf = activeView.leaf;
     }
-    if (this.settings.autoOpenDashboard) await this.openReviewCenter(true);
+    if (!this.unloaded && this.settings.autoOpenDashboard) await this.openReviewCenter(true);
   }
 
   private async openActiveNote(): Promise<void> {
+    if (this.unloaded) return;
     await this.enableFileExplorerAutoReveal();
     let entry: QueueEntry | null;
     try { entry = await this.service.prepareCurrent(); }
     catch (error) { new Notice(errorMessage(error)); await this.openReviewCenter(true); return; }
+    if (this.unloaded) return;
     if (!entry) {
       await this.openReviewCenter(false);
       return;
@@ -749,9 +767,10 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private syncOverlayAfterOpen(leaf: WorkspaceLeaf): void {
+    if (this.unloaded) return;
     this.overlay.sync(leaf, true);
     for (const delay of [50, 200, 600]) {
-      window.setTimeout(() => {
+      this.defer(() => {
         const activeLeaf = this.app.workspace.getMostRecentLeaf();
         const sourcePath = this.service.currentEntry()?.sourcePath ?? "";
         if (activeLeaf && this.isMarkdownLeafForPath(activeLeaf, sourcePath)) {
@@ -765,12 +784,22 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private primeOverlayWhileOpening(): void {
+    if (this.unloaded) return;
     const sync = () => {
       const leaf = this.app.workspace.getMostRecentLeaf() ?? this.sourceLeaf;
       if (leaf) this.overlay.sync(leaf, true);
     };
     sync();
-    for (const delay of [100, 300, 700, 1500]) window.setTimeout(sync, delay);
+    for (const delay of [100, 300, 700, 1500]) this.defer(sync, delay);
+  }
+
+  private defer(callback: () => void, delay: number): void {
+    if (this.unloaded) return;
+    const timer = window.setTimeout(() => {
+      this.deferredTimers.delete(timer);
+      if (!this.unloaded) callback();
+    }, delay);
+    this.deferredTimers.add(timer);
   }
 
   private registerVaultEvents(): void {
@@ -814,13 +843,14 @@ export default class ReviewCenterPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
         for (const delay of [0, 50, 200]) {
-          window.setTimeout(() => this.syncActiveLeaf(this.app.workspace.getMostRecentLeaf()), delay);
+          this.defer(() => this.syncActiveLeaf(this.app.workspace.getMostRecentLeaf()), delay);
         }
       }),
     );
   }
 
   private syncActiveLeaf(leaf: WorkspaceLeaf | null): void {
+    if (this.unloaded) return;
     const entry = this.service.currentEntry();
     const reviewing = !this.showDashboard && (leaf?.view.getViewType() === REVIEW_CENTER_VIEW || (leaf?.view as MarkdownView | undefined)?.file?.path === entry?.sourcePath);
     this.service.setTimingActive(!document.hidden && reviewing);
@@ -839,6 +869,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private async renderOpenViews(): Promise<void> {
+    if (this.unloaded) return;
     for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_CENTER_VIEW)) {
       if (leaf.view instanceof ReviewCenterView) await leaf.view.render();
     }
@@ -897,43 +928,36 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   private getOrCreateDeviceId(): string {
-    const key = `${this.localPrefix()}:device-id`;
-    let value = window.localStorage.getItem(key);
-    if (!value) {
-      value = createId("device");
-      window.localStorage.setItem(key, value);
-    }
-    return value;
+    const value = readLocalState(this.app, "device-id");
+    if (isSourceId(value)) return value;
+    const id = createId("device");
+    writeLocalState(this.app, "device-id", id);
+    return id;
   }
 
   private saveLocalSession(session: ReviewSession | null, undo: UndoEntry[]): void {
-    const key = `${this.localPrefix()}:session`;
     if (session) {
-      try { window.localStorage.setItem(key, JSON.stringify({ ...session, undoStack: undo.slice(-1) })); }
-      catch { window.localStorage.setItem(key, JSON.stringify(session)); }
+      if (!writeLocalState(this.app, "session", { ...session, undoStack: undo.slice(-1) })) {
+        writeLocalState(this.app, "session", session);
+      }
     }
-    else window.localStorage.removeItem(key);
+    else writeLocalState(this.app, "session", null);
   }
 
   private loadLocalSession(): { session: ReviewSession | null; undo: UndoEntry[] } {
-    const raw = window.localStorage.getItem(`${this.localPrefix()}:session`);
+    const raw = readLocalState(this.app, "session");
     const empty = { session: null, undo: [] };
-    if (!raw) return empty;
+    if (!isObject(raw)) return empty;
     try {
-      const { undoStack, ...session } = JSON.parse(raw);
-      if (!session.id || !["note", "card"].includes(session.mode) || !Array.isArray(session.entryKeys) ||
-        !session.entryKeys.every((key: unknown) => typeof key === "string") || !Number.isInteger(session.currentIndex) || session.currentIndex < 0) return empty;
-      const undo = Array.isArray(undoStack) ? undoStack.filter((entry) => entry?.eventId && entry?.sourceId && entry?.itemId &&
-        entry.before?.id === entry.itemId && entry.after?.id === entry.itemId && entry.before?.schedule && entry.after?.schedule) : [];
-      return { session: session as ReviewSession, undo };
+      const { undoStack, ...session } = raw;
+      if (!isReviewSession(session)) return empty;
+      const undo = Array.isArray(undoStack) ? undoStack.filter(isUndoEntry) : [];
+      return { session, undo };
     } catch {
       return empty;
     }
   }
 
-  private localPrefix(): string {
-    return `review-center:${this.app.vault.getName()}`;
-  }
 }
 
 function errorMessage(error: unknown): string {
@@ -949,7 +973,7 @@ class CardTemplateModal extends Modal {
     const add = (title: string, description: string, action: "standard-qa" | "standard-cloze") => {
       const button = body.createEl("button", { cls: "review-card-template-option" });
       button.createEl("strong", { text: title });
-      button.createEl("span", { text: description });
+      button.createSpan({ text: description });
       button.onclick = () => { this.close(); void this.plugin.authorCurrentNote(action); };
     };
     add("标准问答卡", "START / Basic / Front / Back / END，可写多段答案", "standard-qa");

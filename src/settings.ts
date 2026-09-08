@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, type SettingDefinitionItem } from "obsidian";
 import { groupsFor, parseTags } from "./config";
 import type { ReviewCenterSettings, ReviewMode } from "./types";
 import { folderInput, tagInput, TagInput } from "./inputs";
@@ -20,7 +20,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private migrating = false;
   constructor(app: App, private readonly host: ReviewCenterPlugin) { super(app, host); }
   showRecognition(mode: ReviewMode): void {
-    this.page = "groups"; this.display();
+    this.page = "groups"; this.update();
     this.containerEl.querySelector<HTMLInputElement>(`[data-review-tags="${mode}"] input`)?.focus();
   }
   hide(): void { this.clean(); }
@@ -29,9 +29,21 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     this.host.optionsWorkspace.dispose();
   }
 
-  display(): void {
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [{
+      name: "复习标签、数据与备份、显示",
+      aliases: ["笔记", "知识点", "标签", "数据目录", "迁移", "备份", "热力图", "启动", "review"],
+      render: (setting) => {
+        // Keep the compact tabs and explicit Save while using native search.
+        setting.settingEl.empty(); setting.settingEl.removeClass("setting-item");
+        this.draw(setting.settingEl);
+        return () => this.clean();
+      },
+    }];
+  }
+
+  private draw(root: HTMLElement): void {
     this.clean();
-    const root = this.containerEl;
     root.empty(); root.addClass("review-center-settings");
     const tabs = root.createDiv({ cls: "review-settings-tabs", attr: { role: "tablist", "aria-label": "渐进式复习设置分类" } });
     TABS.forEach(([id, label], index) => {
@@ -40,8 +52,8 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
         "aria-controls": "review-settings-panel", tabindex: this.page === id ? "0" : "-1",
       } });
       const select = (next: SettingsPage) => {
-        this.page = next; this.display();
-        const active = root.querySelector<HTMLElement>("#review-settings-tab-" + next);
+        this.page = next; this.update();
+        const active = this.containerEl.querySelector<HTMLElement>("#review-settings-tab-" + next);
         active?.focus({ preventScroll: true }); active?.scrollIntoView({ block: "nearest", inline: "nearest" });
       };
       button.onclick = () => select(id);
@@ -106,11 +118,11 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
       });
       const error = box.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });
       row.addButton((b) => b.setButtonText("改用标签").onClick(() => {
-        try { replaceGroupTag(workspace.draft, mode, group.id, value); this.display(); }
+        try { replaceGroupTag(workspace.draft, mode, group.id, value); this.update(); }
         catch (e) { error.setText(e instanceof Error ? e.message : String(e)); }
       }));
       row.addButton((b) => b.setButtonText("移除").onClick(() => {
-        const groups = groupsFor(workspace.draft, mode); groups.splice(groups.indexOf(group), 1); this.display();
+        const groups = groupsFor(workspace.draft, mode); groups.splice(groups.indexOf(group), 1); this.update();
       }));
     }
   }
@@ -158,11 +170,11 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private saveRow(root: HTMLElement, title: string, description: string, save: () => Promise<void>, reset: () => void): void {
     const error = root.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });
     const row = new Setting(root).setName(title).setDesc(description);
-    row.addButton((b) => b.setButtonText("还原草稿").onClick(() => { reset(); this.display(); }));
+    row.addButton((b) => b.setButtonText("还原草稿").onClick(() => { reset(); this.update(); }));
     row.addButton((b) => b.setButtonText("保存").setCta().onClick(() => {
       b.setDisabled(true);
       void Promise.resolve().then(save).then(() => {
-        this.display();
+        this.update();
         this.containerEl.createDiv({ cls: "review-settings-saved", text: title + "已完成", attr: { role: "status" } });
       })
         .catch((e) => { error.setText(e instanceof Error ? e.message : String(e)); })

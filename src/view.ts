@@ -1,3 +1,5 @@
+import { readLocalState, writeLocalState } from "./local-state";
+import { isObject } from "./validation";
 import {
   ItemView,
   Menu,
@@ -29,7 +31,6 @@ export class ReviewCenterView extends ItemView {
   private statsScroll = 0;
   private statistics = defaultStatisticsState();
   private page: "home" | "stats" | "manage" = "home";
-  private get homeKey(): string { return `review-center:${this.app.vault.getName()}:home`; }
   showPage(page: "home" | "stats" | "manage"): void {
     if (page === "stats" && this.page !== "stats") {
       this.statistics.mode = this.homeMode;
@@ -39,7 +40,7 @@ export class ReviewCenterView extends ItemView {
     this.page = page; void this.render();
   }
   private saveHome(): void {
-    window.localStorage.setItem(this.homeKey, JSON.stringify({ mode: this.homeMode, selected: this.selected, expanded: this.expanded, scroll: this.homeScroll, statistics: this.statistics }));
+    writeLocalState(this.app, "home", { mode: this.homeMode, selected: this.selected, expanded: this.expanded, scroll: this.homeScroll, statistics: this.statistics });
   }
 
   constructor(leaf: WorkspaceLeaf, readonly plugin: ReviewCenterPlugin) {
@@ -91,11 +92,13 @@ export class ReviewCenterView extends ItemView {
 
   async onOpen(): Promise<void> {
     try {
-      const state = JSON.parse(window.localStorage.getItem(this.homeKey) ?? "{}");
+      const raw = readLocalState(this.app, "home"), state = isObject(raw) ? raw : {};
       this.homeMode = state.mode === "card" ? "card" : "note";
-      this.selected = state.selected ?? {}; this.expanded = state.expanded ?? {}; this.homeScroll = state.scroll ?? 0;
+      this.selected = stringMap(state.selected);
+      this.expanded = isObject(state.expanded) ? Object.fromEntries(Object.entries(state.expanded).filter(([, value]) => typeof value === "boolean")) as Record<string, boolean> : {};
+      this.homeScroll = typeof state.scroll === "number" && Number.isFinite(state.scroll) ? Math.max(0, state.scroll) : 0;
       const stats = state.statistics;
-      if (stats) this.statistics = { mode: stats.mode === "card" ? "card" : "note", scopes: stats.scopes && typeof stats.scopes === "object" ? stats.scopes : {}, forecastDays: stats.forecastDays === 30 ? 30 : 7, activityDays: stats.activityDays === 7 ? 7 : 30, activityMetric: stats.activityMetric === "time" ? "time" : "items" };
+      if (isObject(stats)) this.statistics = { mode: stats.mode === "card" ? "card" : "note", scopes: stringMap(stats.scopes), forecastDays: stats.forecastDays === 30 ? 30 : 7, activityDays: stats.activityDays === 7 ? 7 : 30, activityMetric: stats.activityMetric === "time" ? "time" : "items" };
     } catch { /* A damaged presentation preference never affects review data. */ }
     await this.render();
   }
@@ -112,7 +115,8 @@ export class ReviewCenterView extends ItemView {
     const scroll = container.querySelector<HTMLElement>(".review-tree-scroll");
     if (scroll) { this.homeScroll = scroll.scrollTop; this.saveHome(); }
     if (container.hasClass("is-statistics")) this.statsScroll = container.scrollTop;
-    const focused = container.contains(document.activeElement) ? (document.activeElement as HTMLElement)?.dataset.statsFocus : undefined;
+    const active = container.ownerDocument.activeElement;
+    const focused = active && container.contains(active) ? (active as HTMLElement).dataset.statsFocus : undefined;
     container.empty();
     container.removeClass("is-tree-home");
     container.removeClass("is-statistics");
@@ -274,7 +278,7 @@ export class ReviewCenterView extends ItemView {
     for (const tag of entry.tags) tags.createSpan({ text: tag });
 
     const card = container.createDiv({ cls: `review-card is-${entry.item.kind}` });
-    card.createEl("div", { cls: "review-card-kind", text: `${entry.item.kind === "qa" ? "问答卡" : "挖空卡"} · ${groupLabel(entry.group)}` });
+    card.createDiv({ cls: "review-card-kind", text: `${entry.item.kind === "qa" ? "问答卡" : "挖空卡"} · ${groupLabel(entry.group)}` });
     const front = card.createDiv({ cls: "review-card-front markdown-rendered" });
     const frontMarkdown =
       entry.item.kind === "cloze"
@@ -529,7 +533,7 @@ export class ReviewCenterView extends ItemView {
   private renderDataActions(container: HTMLElement): void {
     const section = container.createDiv({ cls: "review-center-data-actions" });
     section.createEl("h3", { text: "数据与备份" });
-    section.createEl("p", { text: "排程快照与复习历史位于 Vault 的同步数据目录。" });
+    section.createEl("p", { text: "排程快照与复习历史位于知识库的同步数据目录。" });
     const actions = section.createDiv();
     actions.createEl("button", { text: "导出完整 JSON" }).addEventListener("click", () => {
       void (async () => {
@@ -566,4 +570,8 @@ function formatDue(value: string | Date, mode: ReviewMode = "card"): string {
   if (Number.isNaN(date.getTime())) return "未知";
   if (mode === "note") return date.toLocaleDateString("zh-CN");
   return date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  return isObject(value) ? Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item === "string")) as Record<string, string> : {};
 }

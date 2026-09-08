@@ -1,4 +1,5 @@
-import type { Grade } from "ts-fsrs";
+import { assertBackup as validateBackup } from "./validation";
+import { Rating, type Grade } from "ts-fsrs";
 import { createHistoryEvent } from "./history";
 import { buildDailyQueue, collectEntries, getQueueCounts, isLearning, prepareDailyQueue, type DailyQueuePreparation } from "./queue";
 import {
@@ -291,7 +292,7 @@ export class ReviewService {
     const before = cloneValue(entry.item);
     const after = applyRating(entry.item, rating, entry.group.parameters);
     const p = entry.group.parameters;
-    if (rating === 1 && after.schedule.lapses >= (p.leechThreshold ?? 8)) {
+    if (rating === Rating.Again && after.schedule.lapses >= (p.leechThreshold ?? 8)) {
       after.leech = true;
       if (p.leechAction === "suspend") after.status = "suspended";
     }
@@ -712,21 +713,6 @@ function csvCell(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function validateBackup(value: FullBackup): void {
-  if (
-    ![1, 2, 3, 4].includes(value.schemaVersion) ||
-    !Array.isArray(value.records) ||
-    !Array.isArray(value.history) ||
-    !value.settings
-  ) {
-    throw new Error("备份格式或版本无效。");
-  }
-  for (const record of value.records) {
-    if (record.schemaVersion !== 1 || !record.reviewId || !/^[a-z0-9_-]+$/i.test(record.reviewId) || !record.note) {
-      throw new Error("备份中包含无效的来源记录。");
-    }
-  }
-}
 
 const CSV_GRADE_LABELS: Record<number, string> = {
   1: "重来",

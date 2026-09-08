@@ -1,0 +1,29 @@
+name: 问题反馈
+description: 报告复习、设置、升级或显示问题
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: 插件与 Obsidian 版本
+      placeholder: 渐进式复习 1.0.0，Obsidian 1.13.7
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      placeholder: macOS、Windows、iPhone、iPad 或安卓及系统版本
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 如何重现
+      description: 写明操作步骤、预期结果、实际结果，以及首次使用还是从旧版升级。
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: 最小示例或截图
+      description: 可附去除个人内容后的示例笔记、截图和具体提示文字。

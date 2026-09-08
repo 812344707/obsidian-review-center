@@ -33,7 +33,7 @@ export function runOptimizer(host: ReviewCenterPlugin, settings: ReviewCenterSet
       cancel = () => done(undefined, new Error("计算已取消，原参数保持不变。"));
       host.register(() => cancel());
       worker.postMessage({ wasm: __OPTIMIZER_WASM__, input });
-    } catch (e) { reject(e); }
+    } catch (e) { reject(e instanceof Error ? e : new Error(String(e))); }
   });
   return { result, cancel: () => cancel() };
 }

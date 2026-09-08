@@ -1,7 +1,6 @@
 // WASI preview1 host for the eight imports used by the pinned FSRS executable.
-// Runs in an Obsidian Web Worker; the Node bridge is only for the smoke test.
-const port = typeof self === 'undefined' ? require('node:worker_threads').parentPort : self;
-const post = value => port.postMessage(value);
+// Runs entirely in a Web Worker. The CLI harness supplies its own Node bridge.
+const post = value => self.postMessage(value);
 async function run(workerData) {
   const input = new TextEncoder().encode(JSON.stringify(workerData.input));
   let position = 0, output = '', instance;
@@ -51,5 +50,4 @@ async function run(workerData) {
   try { instance.exports._start(); } catch (e) { if (e?.wasiExit !== 0) throw e; }
 }
 const receive = data => run(data).catch(e => post({ error: e?.wasiExit !== undefined ? '计算模块退出：'+e.wasiExit : String(e) }));
-if (typeof self === 'undefined') receive(require('node:worker_threads').workerData);
-else self.onmessage = event => receive(event.data);
+self.onmessage = event => receive(event.data);

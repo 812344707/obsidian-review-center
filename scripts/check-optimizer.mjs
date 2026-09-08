@@ -16,7 +16,9 @@ if (process.argv.includes('--notes')) Object.assign(base, {enable_short_term:fal
 for(const action of ['optimize','retention']) {
  const start=Date.now();
  const result=await new Promise((resolve,reject)=>{
-  const worker=new Worker(fs.readFileSync('optimizer/worker.cjs','utf8'),{eval:true,workerData:{wasm:fs.readFileSync('assets/optimizer.wasm').toString('base64'),input:{...base,action}}});
+  const bridge="const { parentPort, workerData } = require('node:worker_threads'); global.self = { postMessage: value => parentPort.postMessage(value) };\n";
+  const code=bridge+fs.readFileSync('optimizer/worker.cjs','utf8')+'\nself.onmessage({ data: workerData });';
+  const worker=new Worker(code,{eval:true,workerData:{wasm:fs.readFileSync('assets/optimizer.wasm').toString('base64'),input:{...base,action}}});
   let received=false;
   worker.on('message',m=>{ if(m.message) console.log(m.message); if(m.diagnostic) console.error(m.diagnostic); if(m.error) {reject(new Error(m.error));worker.terminate();} else if(m.result) {received=true;resolve(m.result);worker.terminate();} });
   worker.on('error',reject);worker.on('exit',c=>{if(!received&&c!==1) reject(new Error('No result '+c));});

@@ -8,6 +8,7 @@ export function validateRecognition(filter: RecognitionFilter): RecognitionFilte
     const value = r.field === "tag" ? tagValue(r.value) : r.value.trim().replace(/\/$/, "") || (r.value.trim() === "/" ? "/" : "");
     if (!value) throw new Error("请填写每条条件的文件夹或标签，或删除空条件。");
     if (r.field === "tag" && (!/^[\p{L}\p{M}\p{N}_/-]+$/u.test(value) || value.split("/").some((p) => !p) || /^\d+$/.test(value))) throw new Error("请输入一个有效标签，例如 review/伤寒。");
+    // eslint-disable-next-line no-control-regex -- Reject control characters in vault-relative paths.
     if (r.field === "folder" && value !== "/" && (/^[\\/]|^[a-z]:|[\\\u0000-\u001f]/i.test(value) || value.split("/").some((p) => !p || p === "." || p === ".."))) throw new Error("文件夹须为知识库内相对路径；根目录填 /。");
     return { ...r, value };
   }) };

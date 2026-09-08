@@ -171,7 +171,7 @@ export class OptionsWorkspace {
         const raw = this.raw.get(rawKey)!;
         const parsed = raw.trim() === "" ? undefined : validNumber(raw, 0, maximum);
         if (selectedTab === "node") (node.limits ??= {})[field] = parsed;
-        else { if (node.today?.date !== localDayKey(new Date())) node.today = { date: localDayKey(new Date()) }; node.today![field] = parsed; }
+        else { if (node.today?.date !== localDayKey(new Date())) node.today = { date: localDayKey(new Date()) }; node.today[field] = parsed; }
       });
       controls.createEl("button", { text: "↺", attr: { "aria-label": "清除" + label + "单独设置", title: "清除单独设置，恢复继承" } }).onclick = () => {
         inputChanged(rawKey, ""); redraw();
@@ -288,7 +288,7 @@ export class ReviewOptionsModal extends Modal {
       const mode = v as ReviewMode, group = groupsFor(this.host.optionsWorkspace.draft, mode)[0]; if (group) { this.reviewScope = { mode, groupId: group.id }; this.draw(); }
     }));
     const nodes = flattenTree(buildReviewTree(this.host.service.records, this.host.optionsWorkspace.draft, this.reviewScope.mode));
-    select.addDropdown((d) => { nodes.forEach((n) => d.addOption(n.id, n.tagPath ? "　#" + n.tagPath : n.label)); d.setValue(scopeKey(this.reviewScope)).onChange((v) => { const node = nodes.find((n) => n.id === v); if (node) { this.reviewScope = node; this.draw(); } }); });
+    select.addDropdown((d) => { nodes.forEach((n) => { d.addOption(n.id, n.tagPath ? "　#" + n.tagPath : n.label); }); d.setValue(scopeKey(this.reviewScope)).onChange((v) => { const node = nodes.find((n) => n.id === v); if (node) { this.reviewScope = node; this.draw(); } }); });
     this.host.optionsWorkspace.render(this.contentEl.createDiv(), this.reviewScope, () => this.draw());
   }
 }

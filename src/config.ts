@@ -35,6 +35,7 @@ export function parseTags(text: string): string[] {
 
 export function validateDataFolder(value: string): string {
   const path = value.trim().replace(/\/$/, "");
+  // eslint-disable-next-line no-control-regex -- Reject control characters in vault-relative paths.
   if (!path || /^[\\/]|^[a-z]:/i.test(path) || /[\\\u0000-\u001f]/.test(path) || path.split("/").some((part) => !part || part === "." || part === "..")) {
     throw new Error("请输入知识库内的子目录，例如 学习数据/复习中心；不能使用绝对路径或 ../。");
   }
@@ -180,13 +181,13 @@ function advancedParameters(p: Record<string, unknown>): Partial<ReviewParameter
     reviewSort: choice("reviewSort", ["due", "due-random", "group", "interval", "interval-desc", "difficulty", "difficulty-desc", "retention", "retention-desc", "random"], "due"),
     leechThreshold: number(p.leechThreshold, 8, 1, 999), leechAction: choice("leechAction", ["tag", "suspend"], "tag"),
     buryNew: p.buryNew === true, buryReview: p.buryReview === true, buryInterday: p.buryInterday === true,
-    weights: Array.isArray(p.weights) && p.weights.length === 21 && p.weights.every((v) => typeof v === "number" && Number.isFinite(v)) ? [...p.weights] as number[] : undefined,
+    weights: Array.isArray(p.weights) && p.weights.length === 21 && p.weights.every((v: unknown) => typeof v === "number" && Number.isFinite(v)) ? (p.weights as number[]).slice() : undefined,
     historyFilter: typeof p.historyFilter === "string" ? p.historyFilter : "-is:suspended",
     healthCheck: p.healthCheck !== false, rescheduleOnChange: p.rescheduleOnChange === true,
   };
 }
 function normalizeNodes(value: unknown): Record<string, NodeOptions> {
-  const result: Record<string, NodeOptions> = Object.create(null);
+  const result = Object.create(null) as Record<string, NodeOptions>;
   for (const [path, raw] of Object.entries(object(value))) {
     if (["__proto__", "constructor", "prototype"].includes(path) || (path && normalizeTags([path])[0] !== path)) continue;
     const node = object(raw), limits = object(node.limits), today = object(node.today);

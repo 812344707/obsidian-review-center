@@ -32,6 +32,30 @@ function harness(tags = ["note", "card"]) {
 }
 
 describe("tag scanner identity and scope", () => {
+  it("keeps both review scopes when writing an identity temporarily invalidates the metadata cache", async () => {
+    const h = harness();
+    h.file.content = "Q: 正文问题\nA: 正文答案\n\n独立 {{c1::挖空}}。\n";
+    h.app.fileManager.processFrontMatter.mockImplementation(async (file, fn) => {
+      fn(file.cache!.frontmatter as object);
+      file.cache = null;
+    });
+    const result = await h.scanner.scan();
+    expect(result.records[0].tags).toEqual(["#card", "#note"]);
+    expect(Object.keys(result.records[0].cards)).toHaveLength(2);
+    expect(h.file.content.match(/<!--review-center-id: rv-/g)).toHaveLength(2);
+  });
+  it("stops on an unsafe frontmatter identity before rewriting source text or progress", async () => {
+    const h = harness();
+    await h.scanner.scan();
+    const original = h.file.content, records = structuredClone([...h.records.values()]);
+    (h.file.cache!.frontmatter as { review_id: string }).review_id = "../../outside";
+    h.app.vault.process.mockClear(); h.store.saveRecord.mockClear();
+    await expect(h.scanner.scan()).rejects.toThrow(/review_id/);
+    expect(h.file.content).toBe(original);
+    expect([...h.records.values()]).toEqual(records);
+    expect(h.app.vault.process).not.toHaveBeenCalled();
+    expect(h.store.saveRecord).not.toHaveBeenCalled();
+  });
   it("does not rewrite unchanged snapshots or their timestamps on a repeat scan", async () => {
     const h = harness(); const before = await h.scanner.scan();
     h.store.saveRecord.mockClear();

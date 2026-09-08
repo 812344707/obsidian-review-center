@@ -6,6 +6,7 @@ import { parseReviewCards } from "./parser";
 import type { ReviewStore } from "./storage";
 import type { HistoryEvent, ReviewCenterSettings, SourceRecord } from "./types";
 import { hashText, pathIsInside } from "./utils";
+import { isObject } from "./validation";
 
 export interface VerifiedSource {
   record: SourceRecord | null;
@@ -46,8 +47,8 @@ export async function verifySource(
   const cache = app.metadataCache.getFileCache(file);
   if (!cache) throw new Error("来源笔记的索引尚未就绪，请稍后重试。");
   const frontmatter = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
-  const properties = frontmatter ? parse(frontmatter[1]) : null;
-  if (!properties || properties.review_id !== source.reviewId) {
+  const properties: unknown = frontmatter ? parse(frontmatter[1]) : null;
+  if (!isObject(properties) || properties.review_id !== source.reviewId) {
     throw new Error("来源笔记的标识发生变化，请先整理数据。");
   }
   const propertyTags = (value: unknown): string[] => normalizeTags(

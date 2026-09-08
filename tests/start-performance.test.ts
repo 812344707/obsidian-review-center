@@ -64,6 +64,20 @@ describe("review start disk I/O and coordination", () => {
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+  it("does not recreate an overlay from delayed callbacks after the plugin is disabled", async () => {
+    const h = harness(), overlay = { sync: vi.fn(), detach: vi.fn() };
+    Reflect.set(h.plugin, "overlay", overlay);
+    Reflect.set(h.plugin, "overlayMode", "note");
+    Reflect.set(h.plugin.app.workspace, "getMostRecentLeaf", () => ({}));
+    Reflect.get(h.plugin, "primeOverlayWhileOpening").call(h.plugin);
+    expect(overlay.sync).toHaveBeenCalledOnce();
+    h.plugin.onunload();
+    expect(h.plugin.getOverlayMode()).toBeNull();
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(overlay.sync).toHaveBeenCalledOnce();
+    expect(overlay.detach).toHaveBeenCalledOnce();
+  });
+
   it("does not lose a second authored card when a prior local update finishes late", async () => {
     const h = harness(), first = deferred<void>(), second = deferred<void>();
     const refresh = vi.spyOn(h.plugin.service, "refreshSource").mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);

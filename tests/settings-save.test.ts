@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 const ui = vi.hoisted(() => ({ buttons: [] as any[], assimilations: 0 }));
 vi.mock("obsidian", () => {
-  class Base {}
+  class Base { update() {} }
   class Setting {
     setName() { return this; } setDesc() { return this; }
     addButton(make: (button: any) => void) {
@@ -27,12 +27,12 @@ describe("saving settings with Obsidian thenable buttons", () => {
     const root = { createDiv: vi.fn(() => ({ setText: vi.fn() })) };
     const tab = new ReviewCenterSettingTab({} as never, {} as never);
     Object.assign(tab, { containerEl: root });
-    vi.spyOn(tab, "display").mockImplementation(() => {});
+    vi.spyOn(tab, "update").mockImplementation(() => {});
     Reflect.get(tab, "saveRow").call(tab, root, "保存", "", async () => { if (failure) throw new Error("test failure"); }, () => {});
     const button = ui.buttons.find(b => b.text === "保存"); button.click();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(button.disabled).toBe(false);
     expect(ui.assimilations).toBe(0);
-    expect(tab.display).toHaveBeenCalledTimes(failure ? 0 : 1);
+    expect(tab.update).toHaveBeenCalledTimes(failure ? 0 : 1);
   });
 });

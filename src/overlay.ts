@@ -134,7 +134,7 @@ export class ReviewOverlay extends Component {
       document.defaultView?.setTimeout(() => root.removeClass("is-keyboard-active"), 120);
     };
     const viewport = document.defaultView?.visualViewport;
-    const position = () => root.style.setProperty("--review-keyboard-inset", Platform.isMobile && viewport ? `${Math.max(0, document.defaultView!.innerHeight - viewport.height - viewport.offsetTop)}px` : "0px");
+    const position = () => root.style.setProperty("--review-keyboard-inset", Platform.isMobile && viewport ? `${Math.max(0, document.defaultView.innerHeight - viewport.height - viewport.offsetTop)}px` : "0px");
     document.addEventListener("focusin", focusIn);
     document.addEventListener("focusout", focusOut);
     viewport?.addEventListener("resize", position);

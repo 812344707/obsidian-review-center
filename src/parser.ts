@@ -232,7 +232,7 @@ function maskCode(markdown: string): string {
     const opening = runs[index];
     const closing = runs.findIndex((run, next) => next > index && run[0].length === opening[0].length);
     if (closing < 0) continue;
-    const end = runs[closing].index! + runs[closing][0].length;
+    const end = runs[closing].index + runs[closing][0].length;
     output += masked.slice(cursor, opening.index) + masked.slice(opening.index, end).replace(/[^\n]/g, " ");
     cursor = end; index = closing;
   }
