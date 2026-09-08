@@ -4,7 +4,7 @@
 
 最低要求 Obsidian 1.13.0。首次安装，把 ZIP 内的 `review-center/` 放到知识库的插件目录，通常为 `.obsidian/plugins/`，再启用“渐进式复习”。已有版本按 [升级步骤](1.0.0-upgrade.md) 逐文件覆盖，保留 `data.json` 和复习数据目录。
 
-1.0.0 目前是本地发布候选；公开下载版本见 [GitHub Releases](https://github.com/812344707/obsidian-review-center/releases)。
+下载 [1.0.0 正式版完整安装包](https://github.com/812344707/obsidian-review-center/releases/download/1.0.0/review-center-1.0.0.zip)，历次版本见 [GitHub Releases](https://github.com/812344707/obsidian-review-center/releases)。
 
 ## 建立一篇示例
 

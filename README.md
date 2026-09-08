@@ -2,7 +2,7 @@
 
 在 Obsidian 原文中阅读和整理笔记，用问答或挖空复习知识点，通过 FSRS 安排下一次复习。整篇笔记和知识点使用独立的参数与进度。
 
-**当前开发版本：1.0.0 发布候选，尚未公开发行。** 公开下载仍为 [0.4.6](https://github.com/812344707/obsidian-review-center/releases/tag/0.4.6)。最低要求 Obsidian 1.13.0；插件内部 ID 保持 `review-center`，升级沿用现有设置和复习数据。
+**当前版本：1.0.0 正式版。** [下载完整安装包](https://github.com/812344707/obsidian-review-center/releases/download/1.0.0/review-center-1.0.0.zip) · [发布页面](https://github.com/812344707/obsidian-review-center/releases/tag/1.0.0)。最低要求 Obsidian 1.13.0；插件内部 ID 保持 `review-center`，升级沿用现有设置和复习数据。
 
 ## 开始使用
 
@@ -38,7 +38,7 @@
 
 解压安装包，将其中的 `review-center/` 放入知识库的 `.obsidian/plugins/`，在社区插件设置中启用“渐进式复习”。当前尚未提交 Obsidian 社区目录。
 
-升级前关闭插件并备份知识库，把包内 6 个文件复制到原插件目录内，覆盖同名文件，**保留已有 `data.json` 和复习数据目录，不要替换整个插件文件夹**。安装包附带许可资料和依赖源码，不含个人设置或复习内容。1.0.0 候选包为本地生成的 `release/1.0.0/review-center-1.0.0.zip`。
+升级前关闭插件并备份知识库，把包内 6 个文件复制到原插件目录内，覆盖同名文件，**保留已有 `data.json` 和复习数据目录，不要替换整个插件文件夹**。安装包附带许可资料和依赖源码，不含个人设置或复习内容。下载文件名为 `review-center-1.0.0.zip`。
 
 1.0.0 增加异常数据校验、本机状态隔离和设置 API 兼容。为避免同名知识库混用临时状态，旧版正在进行的临时队列、主页位置和会话撤销记录不自动迁入；再次点击“开始”会依据保留的排程继续。详情见 [1.0.0 升级说明](docs/1.0.0-upgrade.md)。
 
@@ -58,7 +58,7 @@
 
 反馈请使用 [GitHub Issues](https://github.com/812344707/obsidian-review-center/issues)，提供设备、Obsidian／插件版本、复现步骤和不含隐私的最小示例。
 
-历次变化见 [更新记录](CHANGELOG.md)。1.0.0 的 [发布说明草稿](docs/release-notes-1.0.0.md) 与 [发行准备清单](docs/release-readiness-1.0.0.md) 会区分本地验证、实际设备验收和公开发行状态。
+历次变化见 [更新记录](CHANGELOG.md)。1.0.0 的 [发布说明](docs/release-notes-1.0.0.md) 与 [发行记录](docs/release-readiness-1.0.0.md) 区分本地验证、实际设备验收和公开发行状态。
 
 ## 复用与许可
 
