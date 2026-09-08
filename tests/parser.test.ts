@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertMissingBlockIds, parseReviewCards, parseReviewSection, renderCloze } from "../src/parser";
+import { clozeAnswers, insertMissingBlockIds, parseReviewCards, parseReviewSection, renderCloze } from "../src/parser";
 
 describe("parseReviewSection", () => {
   it("only parses cards inside the configured review section", () => {
@@ -77,6 +77,26 @@ describe("renderCloze", () => {
     const raw = "{{c1::甲::提示}}、{{c1::乙}}、{{c2::丙}}";
     expect(renderCloze(raw, 1, false)).toBe("==提示==、==\u2060==、丙");
     expect(renderCloze(raw, 1, true)).toBe("==甲==、==乙==、丙");
+  });
+
+  it("renders Markdown code inside an answer while leaving code examples alone", () => {
+    const raw = "示例 `{{c1::忽略}}`，答案 {{c1::**重点**和 `inline code`::提示}}。";
+    expect(renderCloze(raw, 1, false)).toBe("示例 `{{c1::忽略}}`，答案 ==提示==。");
+    expect(renderCloze(raw, 1, true)).toBe("示例 `{{c1::忽略}}`，答案 ==**重点**和 `inline code`==。");
+  });
+});
+
+describe("clozeAnswers", () => {
+  it("preserves blocks and repeated target answers in source order", () => {
+    const raw = "{{c1::第一段\n\n- **要点**\n- `示例`::提示}}，{{c2::其他答案}}，{{c1::另一空}}";
+    expect(clozeAnswers(raw, 1)).toEqual(["第一段\n\n- **要点**\n- `示例`", "另一空"]);
+    expect(clozeAnswers(raw, 2)).toEqual(["其他答案"]);
+  });
+
+  it("ignores inline and fenced examples without hiding real answers", () => {
+    const raw = "`{{c1::行内示例}}`\n\n```md\n{{c1::代码块示例}}\n```\n\n{{c1::实际答案}}";
+    expect(clozeAnswers(raw, 1)).toEqual(["实际答案"]);
+    expect(clozeAnswers(raw, 3)).toEqual([]);
   });
 });
 

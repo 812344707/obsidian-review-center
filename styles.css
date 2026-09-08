@@ -162,14 +162,33 @@
   min-height: 90px;
 }
 
-.review-card.is-cloze mark {
+.review-card-front,
+.review-card-answer {
+  overflow-wrap: anywhere;
+}
+
+.review-card.is-cloze .review-card-front mark {
   background: transparent;
   border-bottom: 2px solid var(--text-normal);
+  box-sizing: border-box;
   color: inherit;
   display: inline-block;
-  min-width: 4em;
+  max-width: 100%;
+  min-width: min(4em, 100%);
   padding: 0 0.18em 0.08em;
   text-align: center;
+}
+
+.review-card.is-cloze .review-card-front.is-answer-visible mark {
+  border-bottom: 0;
+  display: inline;
+  min-width: 0;
+  padding: 0;
+  text-align: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--review-tint);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
 }
 
 .review-card-template-options {

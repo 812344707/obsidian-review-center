@@ -9,7 +9,7 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 import { BackupPickerModal, ChangedCardsModal } from "./modals";
-import { renderCloze } from "./parser";
+import { clozeAnswers, renderCloze } from "./parser";
 import { GRADE_LABELS, REVIEW_GRADES, reviewDueDate } from "./scheduler";
 import type ReviewCenterPlugin from "./main";
 import { groupsFor, resolveGroup } from "./config";
@@ -289,8 +289,19 @@ export class ReviewCenterView extends ItemView {
 
     const reveal = async (): Promise<void> => {
       if (entry.item.kind === "cloze") {
-        front.empty();
-        await MarkdownRenderer.render(this.app, renderCloze(entry.item.content.raw, entry.item.clozeIndex ?? 1, true), front, entry.sourcePath, this);
+        const answers = clozeAnswers(entry.item.content.raw, entry.item.clozeIndex ?? 1);
+        if (answers.some((answer) => /[\r\n]/.test(answer))) {
+          // Inline highlight delimiters cannot span Markdown paragraphs or lists.
+          card.createDiv({ cls: "review-card-divider", text: "答案" });
+          for (const markdown of answers) {
+            const answer = card.createDiv({ cls: "review-card-answer markdown-rendered" });
+            await MarkdownRenderer.render(this.app, markdown, answer, entry.sourcePath, this);
+          }
+        } else {
+          front.empty();
+          front.addClass("is-answer-visible");
+          await MarkdownRenderer.render(this.app, renderCloze(entry.item.content.raw, entry.item.clozeIndex ?? 1, true), front, entry.sourcePath, this);
+        }
         if (entry.item.content.extra) {
           card.createDiv({ cls: "review-card-divider", text: "补充" });
           const extra = card.createDiv({ cls: "review-card-answer markdown-rendered" });

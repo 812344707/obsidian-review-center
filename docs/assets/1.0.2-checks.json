@@ -1,0 +1,43 @@
+{
+  "version": "1.0.2",
+  "baseCommit": "0776dda60811d1d1738efaaabeabbe0a3db88d07",
+  "tests": {
+    "files": 38,
+    "passed": 261
+  },
+  "lintErrors": 0,
+  "existingDeprecationWarnings": 1,
+  "typescriptPassed": true,
+  "runtimeMatchesNativeTestedBuild": true,
+  "mainSha256": "58601d12e975d5c18a5bae81e7b4abba988bcdb064ca9ac51d623049df628b57",
+  "stylesSha256": "4a58dd93da3f814fc32126b0a30203f2abd8eebbae7eeeff2514a6f4ae41e081",
+  "package": {
+    "version": "1.0.2",
+    "manifestAndLockAligned": true,
+    "runtimeUsesWebApis": true,
+    "documentationLinksChecked": 38,
+    "zipName": "review-center-1.0.2.zip",
+    "zipFilesChecked": 6,
+    "bytes": 402923,
+    "sha256": "5ce84aeaf57fd21107e0c660d8518bc56595ad2cf0afea81ea9cfd0a6437e9c1",
+    "checksumsVerified": true
+  },
+  "nativeQa": {
+    "obsidianVersion": "1.13.7",
+    "platform": "macOS",
+    "syntheticFixtures": true,
+    "scenarios": 60,
+    "assertions": 697,
+    "widths": [
+      1180,
+      390,
+      320
+    ],
+    "themes": [
+      "light",
+      "dark"
+    ],
+    "errors": 0,
+    "physicalMobileDevicesTested": false
+  }
+}

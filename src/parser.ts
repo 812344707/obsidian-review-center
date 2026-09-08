@@ -325,12 +325,20 @@ export function insertMissingBlockIds(
 export function renderCloze(raw: string, targetIndex: number, answerSide: boolean): string {
   const searchable = maskCode(raw);
   return raw.replace(CLOZE_PATTERN, (full, indexText: string, answer: string, hint: string | undefined, offset: number) => {
-    if (searchable.slice(offset, offset + full.length) !== full) return full;
+    if (searchable.slice(offset, offset + 2) !== "{{") return full;
     const index = Number(indexText);
     if (answerSide) return index === targetIndex ? `==${answer}==` : answer;
     if (index === targetIndex) return `==${hint?.trim() || "\u2060"}==`;
     return answer;
   });
+}
+
+/** Preserve each answer's Markdown for rendering block content separately. */
+export function clozeAnswers(raw: string, targetIndex: number): string[] {
+  const searchable = maskCode(raw);
+  return [...raw.matchAll(CLOZE_PATTERN)]
+    .filter((match) => Number(match[1]) === targetIndex && searchable.slice(match.index, match.index + 2) === "{{")
+    .map((match) => match[2]);
 }
 
 export interface CalloutRange {
