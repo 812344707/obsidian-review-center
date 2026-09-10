@@ -18,6 +18,10 @@ describe("exercise page naming and content", () => {
     expect(renderExercisePageName("{{title}}-习题-{{date}}-{{time}}", "伤寒论", now))
       .toBe("伤寒论-习题-2026-09-10-143025.md");
     expect(renderExercisePageName("{{date}} {{title}}.md", "原文", now)).toBe("2026-09-10 原文.md");
+    expect(renderExercisePageName("{{title}}-{{yyyy-HHmm-ss}}", "伤寒论", now))
+      .toBe("伤寒论-2026-1430-25.md");
+    expect(renderExercisePageName("{{yyyy}}-{{MM}}{{dd}}-{{HH}}{{mm}}{{ss}}", "原文", now))
+      .toBe("2026-0910-143025.md");
   });
 
   it("sanitizes source titles but rejects invalid templates and variables", () => {

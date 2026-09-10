@@ -94,7 +94,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
         });
         this.cleaners.push(() => suggest.close());
       });
-    new Setting(root).setName("文件名模板").setDesc("支持 {{title}}、{{date}} 和 {{time}}；自动添加 .md。")
+    new Setting(root).setName("文件名模板").setDesc("支持 {{title}}、{{date}}、{{time}} 和 {{yyyy-HHmm-ss}} 等时间格式；自动添加 .md。")
       .addText((t) => t.setPlaceholder("{{title}}-习题-{{date}}-{{time}}")
         .setValue(draft.exercisePageNameTemplate).onChange((value) => {
           draft.exercisePageNameTemplate = value; updatePreview();

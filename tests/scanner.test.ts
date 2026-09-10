@@ -16,7 +16,7 @@ function harness(tags = ["note", "card"]) {
   const files: File[] = [file];
   const records = new Map<string, SourceRecord>(); const history: HistoryEvent[] = [];
   const app = {
-    vault: { getMarkdownFiles: () => files, read: async (file: File) => file.content,
+    vault: { getMarkdownFiles: () => files, read: vi.fn(async (file: File) => file.content),
       process: vi.fn(async (file: File, fn: (text: string) => string) => { file.content = fn(file.content); }) },
     metadataCache: { getFileCache: (file: File) => file.cache },
     fileManager: { processFrontMatter: vi.fn(async (file: File, fn: (value: object) => void) => fn(file.cache!.frontmatter as object)) },
@@ -187,18 +187,54 @@ describe("tag scanner identity and scope", () => {
     expect(result.records.find((r) => r.sourcePath === copy.path)?.reviewId).not.toBe(first.reviewId);
   });
 
-  it("migrates known out-of-scope legacy notes without losing schedules or repeating conversion", async () => {
+  it("does not read or migrate an out-of-scope legacy note until it is included again", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
     h.file.content = h.file.content.replace(/^> \[!review\][+-] 复习$/m, "## 复习").replace(/^> ?/gm, "");
     (h.file.cache!.frontmatter as { tags: string[] }).tags = [];
+    h.app.vault.read.mockClear();
     const result = await h.scanner.scan();
-    expect(h.file.content).toContain("> [!review]+ 复习");
+    expect(h.app.vault.read).not.toHaveBeenCalled();
+    expect(h.file.content).toContain("## 复习");
     expect(result.records[0].sourceStatus).toBe("out-of-scope");
     expect(result.records[0].cards).toEqual(first.cards);
-    const backups = h.store.backupSource.mock.calls.length;
+    (h.file.cache!.frontmatter as { tags: string[] }).tags = ["note", "card"];
     await h.scanner.scan();
-    expect(h.store.backupSource.mock.calls).toHaveLength(backups);
+    expect(h.file.content).toContain("> [!review]+ 复习");
     expect(h.history.filter((event) => event.action === "delete")).toHaveLength(0);
+  });
+
+  it("uses metadata only for unchanged and excluded files, then reads a changed included file", async () => {
+    const h = harness();
+    Object.assign(h.file.stat, { mtime: 100, size: h.file.content.length });
+    await h.scanner.scan();
+    h.app.vault.read.mockClear();
+    const excluded = structuredClone(h.file);
+    excluded.path = "资料/未纳入.md"; excluded.basename = "未纳入";
+    excluded.cache!.frontmatter = { tags: [] };
+    Object.assign(excluded.stat, { mtime: 100, size: excluded.content.length });
+    h.files.push(excluded);
+    await h.scanner.scan();
+    expect(h.app.vault.read).not.toHaveBeenCalled();
+    const restarted = new VaultScanner(h.app as unknown as App, h.store as unknown as ReviewStore, () => h.settings);
+    await restarted.scan();
+    expect(h.app.vault.read).not.toHaveBeenCalled();
+    h.file.content = h.file.content.replace("答:: 答案", "答:: 新答案");
+    Object.assign(h.file.stat, { mtime: 101, size: h.file.content.length });
+    await restarted.scan();
+    expect(h.app.vault.read).toHaveBeenCalledWith(h.file);
+    expect(h.app.vault.read).not.toHaveBeenCalledWith(excluded);
+  });
+
+  it("reads an indexed content change even when file time and size are unchanged", async () => {
+    const h = harness();
+    Object.assign(h.file.stat, { mtime: 100, size: h.file.content.length });
+    await h.scanner.scan();
+    h.file.content = h.file.content.replace("答:: 答案", "答:: 回答");
+    h.scanner.markSourceChanged(h.file.path);
+    h.scanner.markMetadataReady(h.file.path, h.file.content);
+    h.app.vault.read.mockClear();
+    await h.scanner.scan();
+    expect(h.app.vault.read).toHaveBeenCalledWith(h.file);
   });
   it("keeps the original note and schedules on a failed migration backup, then retries", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];

@@ -151,6 +151,14 @@ export class VaultScanner {
       const tags = scanTags.get(file)!;
       return resolveGroup(tags, settings.noteGroups, file.path) || resolveGroup(tags, settings.cardGroups, file.path);
     });
+    const scanSignature = sourceScanSignature(settings);
+    const contentFiles = watchedFiles.filter((file) => {
+      const tags = scanTags.get(file)!;
+      if (!resolveGroup(tags, settings.cardGroups, file.path)) return false;
+      const cachedId = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
+      const known = recordById.get(cachedId ?? "") ?? recordByPath.get(file.path);
+      return this.sourceNeedsContent(file, known, scanSignature);
+    });
     for (const file of watchedFiles) {
       const id = readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter);
       if (id && !isSourceId(id)) throw new Error(`笔记“${file.path}”的 review_id 无效，整理已停止。请从备份核对原标识，不要删除进度文件。`);
@@ -165,13 +173,10 @@ export class VaultScanner {
     }
     let backedUp = false;
     let checked = 0;
-    for (const file of allMarkdown) {
-      await progress.step(20, 45, ++checked, allMarkdown.length, `检查材料 ${checked}/${allMarkdown.length}`);
-      if (pathIsInside(file.path, settings.dataFolder)) continue;
+    for (const file of contentFiles) {
+      await progress.step(20, 45, ++checked, contentFiles.length, `检查变化材料 ${checked}/${contentFiles.length}`);
       const known = recordById.get(readReviewId(this.app.metadataCache.getFileCache(file)?.frontmatter) ?? "") ??
         recordByPath.get(file.path);
-      const tags = scanTags.get(file)!;
-      if (!known && !resolveGroup(tags, settings.cardGroups, file.path)) continue;
       try {
         const original = await this.app.vault.read(file);
         const conversion = convertLegacySection(original, settings.reviewHeading, settings.reviewHeadingLevel, settings.reviewCalloutTypes);
@@ -209,6 +214,8 @@ export class VaultScanner {
         migrationWarnings.set(file.path, ["复习块迁移未完成，原有进度保留：" + (error instanceof Error ? error.message : String(error))]);
       }
     }
+    if (!contentFiles.length) await progress.step(20, 45, 1, 1, "没有需要读取的变化材料");
+    const contentPaths = new Set(contentFiles.map((file) => file.path));
     const identified = await this.identifyWatchedFiles(watchedFiles.filter((file) => !blockedIdentityPaths.has(file.path)), recordById, outsideIdentityPaths, scanTags,
       (done, total) => progress.step(45, 55, done, total, `核对笔记标识 ${done}/${total}`));
     const activeIds = new Set<string>();
@@ -217,7 +224,8 @@ export class VaultScanner {
     let organized = 0;
     for (const entry of identified) {
       const fileEvents: HistoryEvent[] = [];
-      const record = await this.scanFile(entry, recordById.get(entry.reviewId), fileEvents, migrationWarnings.get(entry.file.path));
+      const record = await this.scanFile(entry, recordById.get(entry.reviewId), fileEvents,
+        migrationWarnings.get(entry.file.path), contentPaths.has(entry.file.path), scanSignature);
       activeIds.add(record.reviewId);
       resultRecords.push(record);
       await this.store.appendHistory(fileEvents);
@@ -330,6 +338,8 @@ export class VaultScanner {
     existing: SourceRecord | undefined,
     events: HistoryEvent[],
     migrationWarnings?: string[],
+    scanContent = true,
+    scanSignature = sourceScanSignature(this.getSettings()),
   ): Promise<SourceRecord> {
     const settings = this.getSettings();
     const now = new Date();
@@ -339,7 +349,7 @@ export class VaultScanner {
     let scannedMarkdown = "";
     if (migrationWarnings?.length) {
       parsed = { found: true, valid: false, cards: [], warnings: migrationWarnings };
-    } else if (cardGroup) {
+    } else if (cardGroup && scanContent) {
       let markdown = await this.app.vault.read(entry.file);
       parsed = (await this.parseSource(entry.reviewId, markdown)).result;
       if (parsed.valid && parsed.cards.some((draft) => !draft.blockId)) {
@@ -368,10 +378,31 @@ export class VaultScanner {
     record.sourceTitle = entry.file.basename;
     record.tags = [...new Set(tags)].sort();
     record.updatedAt = now.toISOString();
-    record.sourceStatus = !parsed || parsed.valid ? "active" : "parse-error";
-    record.warnings = [...(parsed?.warnings ?? [])];
+    if (cardGroup && !scanContent && existing) {
+      record.sourceStatus = existing.sourceStatus === "parse-error" ? "parse-error" : "active";
+      record.warnings = [...existing.warnings];
+    } else {
+      record.sourceStatus = !parsed || parsed.valid ? "active" : "parse-error";
+      record.warnings = [...(parsed?.warnings ?? [])];
+    }
     if (parsed?.valid) this.reconcileCards(record, parsed.cards, events, now);
+    if (scannedMarkdown) {
+      record.sourceHash = hashText(scannedMarkdown);
+      record.sourceModifiedAt = entry.file.stat.mtime;
+      record.sourceSize = entry.file.stat.size;
+      record.sourceScanSignature = scanSignature;
+    }
     return record;
+  }
+
+  private sourceNeedsContent(file: TFile, existing: SourceRecord | undefined, scanSignature: string): boolean {
+    if (!existing || existing.sourceStatus === "out-of-scope" || existing.sourceStatus === "deleted") return true;
+    if (this.pendingMetadata.has(file.path)) return true;
+    const indexedHash = this.indexedHashes.get(file.path);
+    if (indexedHash && indexedHash !== existing.sourceHash) return true;
+    if (!Number.isSafeInteger(file.stat.mtime) || !Number.isSafeInteger(file.stat.size)) return true;
+    return existing.sourceHash === undefined || existing.sourceModifiedAt !== file.stat.mtime ||
+      existing.sourceSize !== file.stat.size || existing.sourceScanSignature !== scanSignature;
   }
 
   private parseSource(sourceId: string, markdown: string) {
@@ -596,6 +627,15 @@ export class VaultScanner {
 
 function recordSignature(record: SourceRecord): string {
   return JSON.stringify({ ...record, updatedAt: "" });
+}
+
+function sourceScanSignature(settings: ReviewCenterSettings): string {
+  return hashText(JSON.stringify({
+    parserVersion: CARD_PARSER_VERSION,
+    reviewHeading: settings.reviewHeading,
+    reviewHeadingLevel: settings.reviewHeadingLevel,
+    reviewCalloutTypes: settings.reviewCalloutTypes.map((value) => value.toLowerCase()).sort(),
+  }));
 }
 
 function readReviewId(frontmatter: unknown): string | undefined {

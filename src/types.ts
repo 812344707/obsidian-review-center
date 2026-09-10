@@ -52,6 +52,11 @@ export interface SourceRecord {
   sourceTitle: string;
   sourceCreatedAt: string;
   updatedAt: string;
+  /** Optional incremental-scan metadata; older records are upgraded on their next in-scope scan. */
+  sourceHash?: string;
+  sourceModifiedAt?: number;
+  sourceSize?: number;
+  sourceScanSignature?: string;
   tags: string[];
   sourceStatus: SourceStatus;
   warnings: string[];

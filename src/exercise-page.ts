@@ -19,6 +19,17 @@ export function exercisePageVariables(now = new Date()): { date: string; time: s
   };
 }
 
+function renderTimePattern(pattern: string, now: Date): string | undefined {
+  if (!/(?:yyyy|MM|dd|HH|mm|ss)/.test(pattern)) return undefined;
+  const remainder = pattern.replace(/yyyy|MM|dd|HH|mm|ss/g, "");
+  if (/[^ ._-]/.test(remainder)) return undefined;
+  const values: Record<string, string> = {
+    yyyy: String(now.getFullYear()), MM: pad(now.getMonth() + 1), dd: pad(now.getDate()),
+    HH: pad(now.getHours()), mm: pad(now.getMinutes()), ss: pad(now.getSeconds()),
+  };
+  return pattern.replace(/yyyy|MM|dd|HH|mm|ss/g, (token) => values[token]);
+}
+
 export function validateExercisePageFolder(value: string, dataFolder: string): string {
   const folder = value.trim().replace(/\/+$/, "");
   // eslint-disable-next-line no-control-regex -- Reject control characters in vault-relative paths.
@@ -42,13 +53,14 @@ export function renderExercisePageName(template: string, title: string, now = ne
   let value = template.trim().replace(/\.md$/i, "");
   if (!value) throw new Error("文件名模板不能为空。");
   const unknown = [...value.matchAll(/\{\{([^{}]+)\}\}/g)].map((match) => match[1])
-    .filter((name) => !["title", "date", "time"].includes(name));
+    .filter((name) => !["title", "date", "time"].includes(name) && renderTimePattern(name, now) === undefined);
   if (unknown.length) throw new Error(`不支持的文件名变量：{{${unknown[0]}}}。`);
   const variables = { title: safeSourceTitle(title), ...exercisePageVariables(now) };
-  value = value.replace(/\{\{(title|date|time)\}\}/g, (_, key: keyof typeof variables) => variables[key]);
+  value = value.replace(/\{\{([^{}]+)\}\}/g, (_, key: string) =>
+    key in variables ? variables[key as keyof typeof variables] : renderTimePattern(key, now)!);
   // eslint-disable-next-line no-control-regex -- Reject literal template characters that cannot form a portable filename.
   if (/\{\{|\}\}|[\\/:*?"<>|\u0000-\u001f]/.test(value) || !value.trim() || /^[. ]/.test(value)) {
-    throw new Error("文件名模板包含无效字符；可使用普通文字和 {{title}}、{{date}}、{{time}}。");
+    throw new Error("文件名模板包含无效字符；可使用普通文字、{{title}}、{{date}}、{{time}} 或 {{yyyy-HHmm-ss}}。");
   }
   const normalized = value.replace(/[. ]+$/g, "").trim();
   if (!normalized) throw new Error("文件名模板生成了空文件名。");

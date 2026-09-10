@@ -40,6 +40,10 @@ export function assertSourceRecord(value: unknown): asserts value is SourceRecor
   if (!isObject(value) || value.schemaVersion !== 1 || !isSourceId(value.reviewId) ||
     typeof value.sourcePath !== "string" || !value.sourcePath || typeof value.sourceTitle !== "string" ||
     !date(value.sourceCreatedAt) || !date(value.updatedAt) || !isStringList(value.tags) || !isStringList(value.warnings) ||
+    (value.sourceHash !== undefined && (typeof value.sourceHash !== "string" || !/^[0-9a-f]{8}$/.test(value.sourceHash))) ||
+    (value.sourceModifiedAt !== undefined && !integer(value.sourceModifiedAt)) ||
+    (value.sourceSize !== undefined && !integer(value.sourceSize)) ||
+    (value.sourceScanSignature !== undefined && (typeof value.sourceScanSignature !== "string" || !value.sourceScanSignature)) ||
     !["active", "out-of-scope", "deleted", "parse-error"].includes(String(value.sourceStatus)) ||
     !isReviewItem(value.note) || value.note.id !== "note" || !isObject(value.cards) || !isObject(value.tombstones) ||
     !Object.entries(value.cards).every(([id, card]) => id !== "note" && isReviewItem(card) && card.id === id) ||
