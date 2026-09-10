@@ -1,6 +1,12 @@
 import type { ReviewCenterSettings, ReviewGroup, ReviewMode, ReviewParameters, ReviewPreset, NodeOptions } from "./types";
 import { createId, localDayKey } from "./utils";
 import { normalizeRecognition, recognitionPriority, recognitionTags } from "./recognition";
+import {
+  DEFAULT_EXERCISE_PAGE_FOLDER,
+  DEFAULT_EXERCISE_PAGE_NAME_TEMPLATE,
+  renderExercisePageName,
+  validateExercisePageFolder,
+} from "./exercise-page";
 
 export function defaultParameters(mode: ReviewMode): ReviewParameters {
   return {
@@ -153,6 +159,21 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     }
     group.presetId = preset.id; group.parameters = preset.parameters;
   }
+  const dataFolder = typeof data.dataFolder === "string" && data.dataFolder.replace(/^\/+|\/+$/g, "").trim()
+    ? data.dataFolder.replace(/^\/+|\/+$/g, "").trim() : "复习中心数据";
+  let exercisePageFolder = "";
+  let exercisePageNameTemplate = DEFAULT_EXERCISE_PAGE_NAME_TEMPLATE;
+  const storedExerciseFolder = typeof data.exercisePageFolder === "string" ? data.exercisePageFolder : DEFAULT_EXERCISE_PAGE_FOLDER;
+  for (const candidate of [storedExerciseFolder, DEFAULT_EXERCISE_PAGE_FOLDER, "习题页"]) {
+    try { exercisePageFolder = validateExercisePageFolder(candidate, dataFolder); break; }
+    catch { /* Try the next safe default without touching any note. */ }
+  }
+  try {
+    const candidate = typeof data.exercisePageNameTemplate === "string"
+      ? data.exercisePageNameTemplate.trim() : DEFAULT_EXERCISE_PAGE_NAME_TEMPLATE;
+    renderExercisePageName(candidate, "原文标题", new Date(2000, 0, 2, 3, 4, 5));
+    exercisePageNameTemplate = candidate;
+  } catch { /* Invalid old settings fall back without touching any note. */ }
   return {
     noteDaySchedulingVersion: 1,
     noteGroups, cardGroups, presets,
@@ -162,7 +183,9 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     // Keep the persisted field for backup compatibility, while recognition is
     // deliberately fixed to the single documented [!review] callout type.
     reviewCalloutTypes: ["review"],
-    dataFolder: typeof data.dataFolder === "string" && data.dataFolder.replace(/^\/+|\/+$/g, "").trim() ? data.dataFolder.replace(/^\/+|\/+$/g, "").trim() : "复习中心数据",
+    dataFolder,
+    exercisePageFolder: exercisePageFolder || "渐进式复习习题",
+    exercisePageNameTemplate,
     autoOpenDashboard: data.autoOpenDashboard === true,
   };
 }

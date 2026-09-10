@@ -323,6 +323,11 @@
   z-index: calc(var(--layer-modal, 50) - 1);
 }
 
+.review-center-overlay.is-exercise-page {
+  grid-template-columns: minmax(0, 760px);
+  justify-content: center;
+}
+
 .review-center-overlay-actions {
   grid-template-columns: repeat(4, minmax(0, 1fr)) 42px 42px;
   margin: 0;

@@ -189,10 +189,10 @@ describe("tag scanner identity and scope", () => {
 
   it("migrates known out-of-scope legacy notes without losing schedules or repeating conversion", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
-    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    h.file.content = h.file.content.replace(/^> \[!review\][+-] 复习$/m, "## 复习").replace(/^> ?/gm, "");
     (h.file.cache!.frontmatter as { tags: string[] }).tags = [];
     const result = await h.scanner.scan();
-    expect(h.file.content).toContain("> [!review]- 复习");
+    expect(h.file.content).toContain("> [!review]+ 复习");
     expect(result.records[0].sourceStatus).toBe("out-of-scope");
     expect(result.records[0].cards).toEqual(first.cards);
     const backups = h.store.backupSource.mock.calls.length;
@@ -202,7 +202,7 @@ describe("tag scanner identity and scope", () => {
   });
   it("keeps the original note and schedules on a failed migration backup, then retries", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
-    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    h.file.content = h.file.content.replace(/^> \[!review\][+-] 复习$/m, "## 复习").replace(/^> ?/gm, "");
     const original = h.file.content;
     h.store.backupSource.mockRejectedValueOnce(new Error("disk error"));
     const failed = await h.scanner.scan();
@@ -224,7 +224,7 @@ describe("tag scanner identity and scope", () => {
   });
   it("leaves duplicate source identities untouched during legacy migration", async () => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
-    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    h.file.content = h.file.content.replace(/^> \[!review\][+-] 复习$/m, "## 复习").replace(/^> ?/gm, "");
     const copy = structuredClone(h.file); copy.path = "资料/重复.md"; h.files.push(copy);
     const original = h.file.content;
     const result = await h.scanner.scan();
@@ -236,7 +236,7 @@ describe("tag scanner identity and scope", () => {
   });
   it.each(["missing-id", "changed-content"])("preserves unmatched saved cards in legacy migration: %s", async (change) => {
     const h = harness(); const first = (await h.scanner.scan()).records[0];
-    h.file.content = h.file.content.replace("> [!review]- 复习", "## 复习").replace(/^> ?/gm, "");
+    h.file.content = h.file.content.replace(/^> \[!review\][+-] 复习$/m, "## 复习").replace(/^> ?/gm, "");
     h.file.content = change === "missing-id" ? h.file.content.replace(/^\^rv-.*$/gm, "") : h.file.content.replace("答:: 答案", "答:: 修改后的答案");
     const original = h.file.content; const history = structuredClone(h.history);
     const result = await h.scanner.scan();

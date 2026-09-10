@@ -22,7 +22,7 @@ class Element {
 
 describe("revealing supplementary Markdown", () => {
   beforeEach(() => vi.clearAllMocks());
-  it.each(["qa", "cloze"] as const)("keeps %s Extra off the front and renders only its content on the back", async (kind) => {
+  it.each(["qa", "cloze"] as const)("hides %s extras until reveal and renders them once on resume", async (kind) => {
     const item = fixtureItem(); item.kind = kind; item.clozeIndex = kind === "cloze" ? 1 : undefined;
     item.content = { ...item.content, raw: "正文 {{c1::答案}}", extra: "解释\n![[附件/图.png|500]]" };
     const entry = { item, sourcePath: "资料/笔记.md", sourceTitle: "笔记", tags: [], group: fixtureSettings().cardGroups[0] };
@@ -50,4 +50,5 @@ describe("revealing supplementary Markdown", () => {
     expect(extraCalls()).toHaveLength(1);
     expect(resumed.all().filter(el => el.options.text === "补充")).toHaveLength(1);
   });
+
 });

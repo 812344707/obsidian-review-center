@@ -67,7 +67,7 @@ export function cardAuthoringEdit(markdown: string, from: number, to: number, ac
   if (owner) {
     const at = Math.min(markdown.length, offsets[owner.end - 1] + lines[owner.end - 1].length);
     if (action === "review") {
-      const text = "\n\n> [!review]- 复习\n> \n";
+      const text = "\n\n> [!review]+ 复习\n> \n";
       return result(at, at, text, text.length - 1);
     }
     const text = "\n\nQ: \nA: \n";
@@ -78,7 +78,7 @@ export function cardAuthoringEdit(markdown: string, from: number, to: number, ac
     const text = "\n\nQ: \nA: \n";
     return result(at, at, text, text.indexOf("Q: ") + 3);
   }
-  const text = "\n\n> [!review]- 复习\n> \n";
+  const text = "\n\n> [!review]+ 复习\n> \n";
   return result(at, at, text, text.length - 1);
 }
 

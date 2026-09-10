@@ -9,6 +9,17 @@ describe("tag scopes and migration", () => {
     settings.noteGroups[0].tags = ["医学/经典"];
     settings.cardGroups[0].tags = [];
     expect(normalizeSettings(settings)).toEqual(settings);
+    expect(settings.exercisePageFolder).toBe("习题");
+    expect(settings.exercisePageNameTemplate).toBe("{{title}}-习题-{{date}}-{{time}}");
+  });
+  it("keeps valid exercise page settings and replaces unsafe stored values", () => {
+    const custom = normalizeSettings({ exercisePageFolder: "卡片/习题", exercisePageNameTemplate: "{{date}}-{{title}}-{{time}}" });
+    expect(custom.exercisePageFolder).toBe("卡片/习题");
+    expect(custom.exercisePageNameTemplate).toBe("{{date}}-{{title}}-{{time}}");
+    const unsafe = normalizeSettings({ exercisePageFolder: "复习中心数据/习题", exercisePageNameTemplate: "{{unknown}}" });
+    expect(unsafe.exercisePageFolder).toBe("习题");
+    expect(unsafe.exercisePageNameTemplate).toBe("{{title}}-习题-{{date}}-{{time}}");
+    expect(normalizeSettings({ dataFolder: "习题", exercisePageFolder: "习题" }).exercisePageFolder).toBe("习题页");
   });
   it("uses OR matching, descendant boundaries, case insensitivity and specificity", () => {
     const parent = { ...createGroup("note"), tags: ["TCM", "科研"] };

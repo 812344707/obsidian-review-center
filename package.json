@@ -1,13 +1,13 @@
 {
   "name": "obsidian-review-center",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Mobile-first Obsidian review plugin powered by FSRS.",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
-    "test": "vitest run",
+    "test": "vitest run --exclude '.build/**'",
     "test:watch": "vitest",
     "check": "npm run lint && npm test && npm run build && npm run check:release",
     "lint": "eslint src",

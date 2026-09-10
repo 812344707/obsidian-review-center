@@ -21,7 +21,7 @@ export interface ReviewContent {
   question: string;
   answer: string;
   raw: string;
-  /** Optional Markdown rendered only after the answer is revealed. */
+  /** Optional back-of-card note for standard Cloze blocks. */
   extra?: string;
   sourceStartLine: number;
   sourceEndLine: number;
@@ -161,6 +161,8 @@ export interface ReviewCenterSettings {
   reviewHeadingLevel: number;
   reviewCalloutTypes: string[];
   dataFolder: string;
+  exercisePageFolder: string;
+  exercisePageNameTemplate: string;
   autoOpenDashboard: boolean;
   presets?: ReviewPreset[];
 }

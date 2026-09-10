@@ -10,7 +10,7 @@ describe("quick card authoring", () => {
   it("inserts a review container without replacing a selected source passage", () => {
     const before = "原文不能丢失\n下一段";
     const after = edit(before, 0, 4, "review");
-    expect(after.text).toContain("原文不能丢失\n\n> [!review]- 复习\n> \n\n下一段");
+    expect(after.text).toContain("原文不能丢失\n\n> [!review]+ 复习\n> \n\n下一段");
     expect(after.text.slice(after.cursor - 2, after.cursor)).toBe("> ");
   });
   it("inserts a body Q/A card after a container and positions the cursor after Q:", () => {
@@ -25,6 +25,7 @@ describe("quick card authoring", () => {
     const before = "> [!review]- A\n> {{c1::文字}}\n";
     const after = edit(before, before.indexOf("文字"), before.indexOf("文字"), "review");
     expect(after.text.match(/\[!review\]/g)).toHaveLength(2);
+    expect(after.text).toContain("> [!review]+ 复习");
     expect(parseReviewCallouts(after.text).cards).toHaveLength(1);
   });
   it("wraps selected words with context and produces a recognized cloze outside a callout", () => {

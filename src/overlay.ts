@@ -4,11 +4,12 @@ import { GRADE_LABELS, REVIEW_GRADES } from "./scheduler";
 import type { QueueEntry } from "./types";
 import type { CardAuthoringAction } from "./card-authoring";
 
-export type OverlayMode = "note" | "context";
+export type OverlayMode = "note" | "context" | "exercise";
 
 interface OverlayHost {
   getOverlayEntry(): QueueEntry | null;
   getOverlayMode(): OverlayMode | null;
+  getExercisePagePath(): string | null;
   previewCurrent(): ReturnType<import("./service").ReviewService["preview"]> | null;
   gradeActiveNote(rating: Grade): Promise<void>;
   canUndoReview(): boolean;
@@ -18,6 +19,7 @@ interface OverlayHost {
   captureCardSelection(): void;
   chooseCardTemplate(): void;
   authorCurrentNote(action: CardAuthoringAction): Promise<void>;
+  createExercisePage(): Promise<void>;
 }
 
 export class ReviewOverlay extends Component {
@@ -36,13 +38,14 @@ export class ReviewOverlay extends Component {
     const stateFile = typeof state?.state?.file === "string" ? state.state.file : null;
     const viewFile = (leaf?.view as MarkdownView | undefined)?.file?.path ?? null;
     const isMarkdown = state?.type === "markdown" || leaf?.view.getViewType() === "markdown";
+    const expectedPath = mode === "exercise" ? this.host.getExercisePagePath() : entry?.sourcePath;
     if (
       !mode ||
-      !entry ||
+      !expectedPath ||
       !leaf ||
       !leaf.view.containerEl.isConnected ||
       !isMarkdown ||
-      (viewFile ?? stateFile) !== entry.sourcePath
+      (viewFile ?? stateFile) !== expectedPath
     ) {
       this.detach();
       return;
@@ -72,6 +75,7 @@ export class ReviewOverlay extends Component {
   private render(mode: OverlayMode): void {
     if (!this.rootEl) return;
     this.rootEl.empty();
+    this.rootEl.toggleClass("is-exercise-page", mode === "exercise");
     if (mode === "context") {
       const button = this.rootEl.createEl("button", {
         cls: "mod-cta review-center-return-button",
@@ -85,17 +89,24 @@ export class ReviewOverlay extends Component {
       return;
     }
 
-    const preview = this.host.previewCurrent();
-    if (!preview) return;
     const entry = this.host.getOverlayEntry();
     const label = this.rootEl.createDiv({ cls: "review-center-overlay-label" });
-    label.createSpan({ text: entry?.sourceTitle ?? "笔记复习" });
+    label.createSpan({ text: mode === "exercise" ? "习题页" : entry?.sourceTitle ?? "笔记复习" });
     const tools = label.createDiv({ cls: "review-authoring-actions" });
+    if (mode === "note") {
+      const button = tools.createEl("button", { text: "习题页", attr: { "aria-label": "新建习题页", "data-author-card": "exercise" } });
+      button.onpointerdown = (event) => event.preventDefault();
+      button.onclick = () => void this.host.createExercisePage();
+    }
     for (const [action, title] of [["review", "制卡"], ["qa", "问答"], ["cloze", "填空"]] as const) {
       const button = tools.createEl("button", { text: title, attr: { "aria-label": title, "data-author-card": action } });
       button.onpointerdown = (event) => { this.host.captureCardSelection(); event.preventDefault(); };
       button.onclick = () => action === "review" ? this.host.chooseCardTemplate() : void this.host.authorCurrentNote(action);
     }
+    if (mode === "exercise") { this.bindKeyboardVisibility(); return; }
+
+    const preview = this.host.previewCurrent();
+    if (!preview) return;
     const actions = this.rootEl.createDiv({ cls: "review-center-overlay-actions" });
     for (const grade of REVIEW_GRADES) {
       const button = actions.createEl("button", { cls: `review-grade grade-${grade}` });

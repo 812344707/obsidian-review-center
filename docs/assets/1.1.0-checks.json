@@ -1,0 +1,18 @@
+{
+  "version": "1.1.0",
+  "date": "2026-09-10",
+  "testFiles": 43,
+  "tests": 293,
+  "eslintErrors": 0,
+  "eslintWarnings": 1,
+  "typescript": true,
+  "productionBuild": true,
+  "manifestAndLockAligned": true,
+  "runtimeUsesWebApis": true,
+  "documentationLinksChecked": 44,
+  "zipName": "review-center-1.1.0.zip",
+  "zipFilesChecked": 6,
+  "bytes": 405957,
+  "sha256": "bb730f07900695fefa86166a8a0768712896e69e6b1986979aa7708205732cc6",
+  "checksumsVerified": true
+}

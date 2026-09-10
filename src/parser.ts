@@ -703,7 +703,7 @@ export function convertLegacySection(markdown: string, heading: string, level: n
   if (calloutRanges(markdown).some((range) => range.start > start && range.start < end)) {
     return { changed: false, markdown, warnings: ["旧复习章节中已有提示块，请先将提示块移到章节外，再重试迁移。"] };
   }
-  const replacement = ["> [!review]- " + heading, ...lines.slice(start + 1, end).map((line) => "> " + line)];
+  const replacement = ["> [!review]+ " + heading, ...lines.slice(start + 1, end).map((line) => "> " + line)];
   // Separate the block from any neighbouring blockquote.
   if (start > 0 && lines[start - 1].trim()) replacement.unshift("");
   if (end < lines.length && lines[end].trim()) replacement.push("");

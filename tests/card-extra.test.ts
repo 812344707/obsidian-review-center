@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertMissingBlockIds, parseReviewCards } from "../src/parser";
+import { convertLegacySection, insertMissingBlockIds, parseReviewCards } from "../src/parser";
 import { hashText } from "../src/utils";
 
 const formats = [
@@ -12,7 +12,7 @@ const formats = [
 ];
 
 describe("supplementary card content", () => {
-  it.each(formats)("separates Extra content without generating cards from it: $name", ({ wrap, kind }) => {
+  it.each(formats)("separates images and text without generating extra cards: $name", ({ wrap, kind }) => {
     const extra = "解释 {{c9::仅补充}}\n![[附件/示意图.png|500]]";
     const markdown = wrap(`\nExtra: ${extra}`);
     const parsed = parseReviewCards(markdown);
@@ -30,6 +30,9 @@ describe("supplementary card content", () => {
     expect(reparsed.cards.map(c => c.hash)).toEqual(parsed.cards.map(c => c.hash));
     expect(reparsed.cards.every(c => c.blockId === "rv-fixed")).toBe(true);
     expect(insertMissingBlockIds(withId, reparsed.cards, () => "rv-new")).toBe(withId);
+    const changed = parseReviewCards(withId.replace("解释", "新解释"));
+    expect(changed.cards[0].hash).not.toBe(reparsed.cards[0].hash);
+    expect(changed.cards[0].blockId).toBe("rv-fixed");
   });
 
   it.each(formats)("empty Extra leaves hashes and supplementary display unchanged: $name", ({ wrap, kind, name }) => {
@@ -62,5 +65,11 @@ describe("supplementary card content", () => {
     expect(parsed.cards).toHaveLength(2);
     expect(parsed.cards[0].content.extra).toBe("补充");
     expect(parsed.cards[1].content.extra).toBeUndefined();
+  });
+
+  it("keeps extras and stable IDs when converting a legacy section", () => {
+    const converted = convertLegacySection("## 复习\n问:: 问题\n答:: 答案\nExtra: ![[图.png]]\n^rv-fixed", "复习", 2);
+    expect(converted.changed).toBe(true);
+    expect(parseReviewCards(converted.markdown).cards[0]).toMatchObject({ blockId: "rv-fixed", content: { extra: "![[图.png]]" } });
   });
 });

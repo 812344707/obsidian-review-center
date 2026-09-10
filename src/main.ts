@@ -6,6 +6,10 @@ import {
   Notice,
   Plugin,
   TFile,
+  TFolder,
+  getAllTags,
+  type Editor,
+  type EditorPosition,
   type OpenViewState,
   type WorkspaceLeaf,
 } from "obsidian";
@@ -39,6 +43,13 @@ import { REVIEW_CENTER_VIEW, ReviewCenterView } from "./view";
 import type { PreparationProgress } from "./preparation";
 import { cardAuthoringEdit, type CardAuthoringAction } from "./card-authoring";
 import { parseReviewCards } from "./parser";
+import {
+  exercisePageMarkdown,
+  exercisePagePath,
+  isExercisePage,
+  renderExercisePageName,
+  validateExercisePageFolder,
+} from "./exercise-page";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -60,6 +71,10 @@ export default class ReviewCenterPlugin extends Plugin {
   private authoringFiles = new Map<string, number>();
   private authoringVersion = 0;
   private authoringTimers = new Map<string, number>();
+  private exercisePages = new Set<string>();
+  private checkedExercisePages = new Set<string>();
+  private activeExercisePagePath: string | null = null;
+  private exercisePageQueue: Promise<void> = Promise.resolve();
   private loadPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
@@ -335,6 +350,62 @@ export default class ReviewCenterPlugin extends Plugin {
     new CardTemplateModal(this).open();
   }
 
+  async createExercisePage(): Promise<void> {
+    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+    const source = view?.file;
+    if (!source) { new Notice("请先打开作为来源的笔记。"); return; }
+    const sourceEditor = view.editor;
+    const sourceCursor = sourceEditor.getCursor("head");
+    const task = this.exercisePageQueue.then(() => this.performCreateExercisePage(source, sourceEditor, sourceCursor));
+    this.exercisePageQueue = task.catch(() => undefined);
+    try { await task; } catch (error) { new Notice(errorMessage(error), 10000); }
+  }
+
+  private async performCreateExercisePage(source: TFile, sourceEditor: Editor, sourceCursor: EditorPosition): Promise<void> {
+    if (this.service.maintenance) throw new Error("正在批量处理，请稍后新建习题页。");
+    const folder = validateExercisePageFolder(this.settings.exercisePageFolder, this.settings.dataFolder);
+    const sourceTitle = source.basename || source.path.split("/").at(-1)?.replace(/\.md$/i, "") || "未命名";
+    const filename = renderExercisePageName(this.settings.exercisePageNameTemplate, sourceTitle);
+    await this.ensureExercisePageFolder(folder);
+    const path = exercisePagePath(folder, filename, (candidate) => this.app.vault.getAbstractFileByPath(candidate) !== null);
+    const cache = this.app.metadataCache.getFileCache(source);
+    if (!cache) throw new Error("原文索引尚未就绪，请稍后再次新建习题页。");
+    const sourceLink = this.app.fileManager.generateMarkdownLink(source, path);
+    const file = await this.app.vault.create(path, exercisePageMarkdown(getAllTags(cache) ?? [], sourceLink, createId("exercise")));
+    this.exercisePages.add(file.path); this.checkedExercisePages.add(file.path);
+    try {
+      const exerciseLink = this.app.fileManager.generateMarkdownLink(file, source.path);
+      sourceEditor.replaceRange(exerciseLink, sourceCursor);
+    } catch (error) {
+      throw new Error(`习题页已保存到“${file.path}”，但未能在原文插入链接：${errorMessage(error)}`);
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    this.activeExercisePagePath = file.path;
+    try {
+      await leaf.openFile(file, { active: true, state: { mode: "source" } });
+      await this.app.workspace.revealLeaf(leaf);
+      if (leaf.view instanceof MarkdownView) {
+        const editor = leaf.view.editor, cursor = { line: editor.lastLine(), ch: 0 };
+        editor.setCursor(cursor); editor.scrollIntoView({ from: cursor, to: cursor }, true); editor.focus();
+      }
+      this.overlay.sync(leaf);
+    } catch (error) {
+      this.activeExercisePagePath = null;
+      throw new Error(`习题页已保存到“${file.path}”，但未能打开：${errorMessage(error)}`);
+    }
+  }
+
+  private async ensureExercisePageFolder(folder: string): Promise<void> {
+    let path = "";
+    for (const segment of folder.split("/")) {
+      path = path ? `${path}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (existing instanceof TFolder) continue;
+      if (existing) throw new Error(`无法创建习题文件夹：“${path}”已被文件占用。`);
+      await this.app.vault.createFolder(path);
+    }
+  }
+
   async authorCurrentNote(action: CardAuthoringAction): Promise<void> {
     try {
       if (this.service.maintenance) throw new Error("正在批量处理，请稍后制卡。");
@@ -365,6 +436,11 @@ export default class ReviewCenterPlugin extends Plugin {
       if (this.authoringFiles.get(path) !== version) return;
       const parsed = parseReviewCards(markdown);
       if (!parsed.valid || !parsed.cards.length) return;
+      if (this.exercisePages.has(path) && !this.service.records.some((record) => record.sourcePath === path)) {
+        this.authoringFiles.delete(path);
+        this.materialsDirty = true; this.updatePreparationState();
+        return;
+      }
       void this.service.refreshSource(path).then(() => {
         if (this.authoringFiles.get(path) === version) this.authoringFiles.delete(path);
         this.overlay?.sync(this.app.workspace.getMostRecentLeaf());
@@ -496,8 +572,11 @@ export default class ReviewCenterPlugin extends Plugin {
   }
 
   getOverlayMode(): OverlayMode | null {
-    return this.unloaded ? null : this.overlayMode;
+    if (this.unloaded) return null;
+    return this.activeExercisePagePath ? "exercise" : this.overlayMode;
   }
+
+  getExercisePagePath(): string | null { return this.activeExercisePagePath; }
 
   previewCurrent(): ReturnType<ReviewService["preview"]> | null {
     const entry = this.getOverlayEntry();
@@ -639,6 +718,7 @@ export default class ReviewCenterPlugin extends Plugin {
     this.addCommand({ id: "organize-materials", name: "整理数据", callback: () => void this.refreshData(true) });
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
     this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
+    this.addCommand({ id: "create-exercise-page", name: "新建习题页", callback: () => void this.createExercisePage() });
     for (const [id, name, action] of [
       ["insert-review-callout", "插入复习折叠块", "review"],
       ["insert-review-qa", "插入简写问答卡", "qa"],
@@ -849,7 +929,11 @@ export default class ReviewCenterPlugin extends Plugin {
         this.updatePreparationState();
       }
     }));
-    this.registerEvent(this.app.vault.on("delete", (file) => this.onVaultFileChanged(file.path)));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      this.exercisePages.delete(file.path); this.checkedExercisePages.delete(file.path);
+      if (this.activeExercisePagePath === file.path) this.activeExercisePagePath = null;
+      this.onVaultFileChanged(file.path);
+    }));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
         if (pathIsInside(oldPath, this.settings.dataFolder) && pathIsInside(file.path, this.settings.dataFolder)) return;
@@ -861,12 +945,16 @@ export default class ReviewCenterPlugin extends Plugin {
           this.authoringFiles.set(file.path + path.slice(oldPath.length), ++this.authoringVersion);
         }
         this.service.sourceRenamed(oldPath, file.path);
+        if (this.exercisePages.delete(oldPath)) this.exercisePages.add(file.path);
+        if (this.checkedExercisePages.delete(oldPath)) this.checkedExercisePages.add(file.path);
+        if (this.activeExercisePagePath === oldPath) this.activeExercisePagePath = file.path;
         this.materialsDirty = true;
         this.updatePreparationState();
       }),
     );
     this.registerEvent(this.app.vault.on("modify", (file) => this.onVaultFileChanged(file.path)));
     this.registerEvent(this.app.metadataCache.on("changed", (file, markdown) => {
+      this.updateExercisePageMarker(file.path, markdown);
       this.service.metadataReady(file.path, markdown);
       this.scheduleAuthoredSource(file.path, markdown);
     }));
@@ -888,13 +976,43 @@ export default class ReviewCenterPlugin extends Plugin {
 
   private syncActiveLeaf(leaf: WorkspaceLeaf | null): void {
     if (this.unloaded) return;
+    const state = leaf?.getViewState();
+    const path = leaf && (state?.type === "markdown" || leaf.view.getViewType() === "markdown")
+      ? (leaf.view as MarkdownView | undefined)?.file?.path ?? (typeof state?.state?.file === "string" ? state.state.file : null)
+      : null;
+    this.activeExercisePagePath = path && this.exercisePages.has(path) ? path : null;
     const entry = this.service.currentEntry();
     const reviewing = !this.showDashboard && (leaf?.view.getViewType() === REVIEW_CENTER_VIEW || (leaf?.view as MarkdownView | undefined)?.file?.path === entry?.sourcePath);
     this.service.setTimingActive(!document.hidden && reviewing);
-    if (leaf && (leaf.getViewState().type === "markdown" || leaf.view.getViewType() === "markdown")) {
+    if (leaf && path && !this.activeExercisePagePath) {
       this.sourceLeaf = leaf;
     }
     this.overlay.sync(leaf);
+    if (leaf && path && !this.checkedExercisePages.has(path)) void this.detectExercisePage(leaf, path);
+  }
+
+  private async detectExercisePage(leaf: WorkspaceLeaf, path: string): Promise<void> {
+    this.checkedExercisePages.add(path);
+    try {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) return;
+      this.updateExercisePageMarker(path, await this.app.vault.cachedRead(file));
+      const active = this.app.workspace.getMostRecentLeaf();
+      if (active !== leaf || !this.isMarkdownLeafForPath(leaf, path)) return;
+      this.activeExercisePagePath = this.exercisePages.has(path) ? path : null;
+      if (this.activeExercisePagePath && this.sourceLeaf === leaf) this.sourceLeaf = null;
+      this.overlay.sync(leaf);
+    } catch { this.checkedExercisePages.delete(path); }
+  }
+
+  private updateExercisePageMarker(path: string, markdown: string): void {
+    this.checkedExercisePages.add(path);
+    if (isExercisePage(markdown)) this.exercisePages.add(path); else this.exercisePages.delete(path);
+    const active = this.app.workspace.getMostRecentLeaf?.();
+    if (active && this.isMarkdownLeafForPath(active, path)) {
+      this.activeExercisePagePath = this.exercisePages.has(path) ? path : null;
+      this.overlay?.sync(active);
+    }
   }
 
   private onVaultFileChanged(path: string): void {

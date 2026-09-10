@@ -6,16 +6,19 @@ import { BulkTagsModal } from "./bulk-tags-modal";
 import type ReviewCenterPlugin from "./main";
 import { groupTag, replaceGroupTag, setReviewTags, tagGroups } from "./tag-groups";
 import { groupFilter } from "./recognition";
+import { renderExercisePageName, validateExercisePageFolder } from "./exercise-page";
 export { DEFAULT_SETTINGS } from "./config";
 
-const TABS = [["groups", "复习标签"], ["data", "数据与备份"], ["display", "显示"]] as const;
+const TABS = [["groups", "复习标签"], ["exercise", "习题页"], ["data", "数据与备份"], ["display", "显示"]] as const;
 type SettingsPage = typeof TABS[number][0];
 type DisplayDraft = Pick<ReviewCenterSettings, "showNoteHeatmap" | "showCardHeatmap" | "autoOpenDashboard">;
+type ExercisePageDraft = Pick<ReviewCenterSettings, "exercisePageFolder" | "exercisePageNameTemplate">;
 
 export class ReviewCenterSettingTab extends PluginSettingTab {
   private page: SettingsPage = "groups";
   private cleaners: Array<() => void> = [];
   private folderDraft?: string;
+  private exercisePageDraft?: ExercisePageDraft;
   private displayDraft?: DisplayDraft;
   private migrating = false;
   private repairMessage = "";
@@ -32,8 +35,8 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [{
-      name: "复习标签、数据与备份、显示",
-      aliases: ["笔记", "知识点", "标签", "数据目录", "迁移", "备份", "修复知识库", "重建索引", "热力图", "启动", "review"],
+      name: "复习标签、习题页、数据与备份、显示",
+      aliases: ["笔记", "知识点", "标签", "习题", "文件名模板", "时间变量", "数据目录", "迁移", "备份", "修复知识库", "重建索引", "热力图", "启动", "review"],
       render: (setting) => {
         // Keep the compact tabs and explicit Save while using native search.
         setting.settingEl.empty(); setting.settingEl.removeClass("setting-item");
@@ -65,8 +68,44 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     });
     const panel = root.createDiv({ cls: "review-settings-panel", attr: { role: "tabpanel", id: "review-settings-panel", "aria-labelledby": "review-settings-tab-" + this.page } });
     if (this.page === "groups") this.renderGroups(panel);
+    else if (this.page === "exercise") this.renderExercisePage(panel);
     else if (this.page === "data") this.renderData(panel);
     else this.renderDisplay(panel);
+  }
+
+  private renderExercisePage(root: HTMLElement): void {
+    this.exercisePageDraft ??= this.currentExercisePage();
+    const draft = this.exercisePageDraft;
+    const preview = root.createDiv({ cls: "review-settings-intro", attr: { role: "status", "aria-live": "polite" } });
+    const updatePreview = () => {
+      try {
+        const folder = validateExercisePageFolder(draft.exercisePageFolder, this.host.settings.dataFolder);
+        const filename = renderExercisePageName(draft.exercisePageNameTemplate, "原文标题");
+        preview.setText(`预览：${folder}/${filename}`);
+      } catch (error) { preview.setText(error instanceof Error ? error.message : String(error)); }
+    };
+    new Setting(root).setName("习题保存文件夹").setDesc("知识库内的非隐藏子目录；不存在时创建。")
+      .addText((t) => {
+        t.setPlaceholder("习题").setValue(draft.exercisePageFolder).onChange((value) => {
+          draft.exercisePageFolder = value; updatePreview();
+        });
+        const suggest = folderInput(this.app, t.inputEl, (value) => {
+          draft.exercisePageFolder = value; t.setValue(value); updatePreview();
+        });
+        this.cleaners.push(() => suggest.close());
+      });
+    new Setting(root).setName("文件名模板").setDesc("支持 {{title}}、{{date}} 和 {{time}}；自动添加 .md。")
+      .addText((t) => t.setPlaceholder("{{title}}-习题-{{date}}-{{time}}")
+        .setValue(draft.exercisePageNameTemplate).onChange((value) => {
+          draft.exercisePageNameTemplate = value; updatePreview();
+        }));
+    updatePreview();
+    this.saveRow(root, "保存习题页设置", "只影响以后新建的习题页。", async () => {
+      const exercisePageFolder = validateExercisePageFolder(draft.exercisePageFolder, this.host.settings.dataFolder);
+      renderExercisePageName(draft.exercisePageNameTemplate, "原文标题");
+      await this.patch({ exercisePageFolder, exercisePageNameTemplate: draft.exercisePageNameTemplate.trim() });
+      this.exercisePageDraft = this.currentExercisePage();
+    }, () => { this.exercisePageDraft = this.currentExercisePage(); });
   }
 
   private renderGroups(root: HTMLElement): void {
@@ -199,6 +238,10 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private currentDisplay(): DisplayDraft {
     const { showNoteHeatmap, showCardHeatmap, autoOpenDashboard } = this.host.settings;
     return { showNoteHeatmap, showCardHeatmap, autoOpenDashboard };
+  }
+  private currentExercisePage(): ExercisePageDraft {
+    const { exercisePageFolder, exercisePageNameTemplate } = this.host.settings;
+    return { exercisePageFolder, exercisePageNameTemplate };
   }
   private saveRow(root: HTMLElement, title: string, description: string, save: () => Promise<void>, reset: () => void): void {
     const error = root.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });
