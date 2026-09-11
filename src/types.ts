@@ -168,6 +168,7 @@ export interface ReviewCenterSettings {
   dataFolder: string;
   exercisePageFolder: string;
   exercisePageNameTemplate: string;
+  exercisePageTags: string[];
   autoOpenDashboard: boolean;
   presets?: ReviewPreset[];
 }

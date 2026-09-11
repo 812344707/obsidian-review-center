@@ -12,7 +12,7 @@ export { DEFAULT_SETTINGS } from "./config";
 const TABS = [["groups", "复习标签"], ["exercise", "习题页"], ["data", "数据与备份"], ["display", "显示"]] as const;
 type SettingsPage = typeof TABS[number][0];
 type DisplayDraft = Pick<ReviewCenterSettings, "showNoteHeatmap" | "showCardHeatmap" | "autoOpenDashboard">;
-type ExercisePageDraft = Pick<ReviewCenterSettings, "exercisePageFolder" | "exercisePageNameTemplate">;
+type ExercisePageDraft = Pick<ReviewCenterSettings, "exercisePageFolder" | "exercisePageNameTemplate" | "exercisePageTags">;
 
 export class ReviewCenterSettingTab extends PluginSettingTab {
   private page: SettingsPage = "groups";
@@ -99,11 +99,17 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
         .setValue(draft.exercisePageNameTemplate).onChange((value) => {
           draft.exercisePageNameTemplate = value; updatePreview();
         }));
+    const tagsRow = new Setting(root).setName("习题页标签").setDesc("添加到以后新建的习题页，并与来源笔记标签合并。留空时只复制来源标签。");
+    const tagsInput = new TagInput(this.app, tagsRow.controlEl, draft.exercisePageTags, (tags) => {
+      draft.exercisePageTags = tags;
+    }, "习题页标签");
+    this.cleaners.push(() => tagsInput.destroy());
     updatePreview();
     this.saveRow(root, "保存习题页设置", "只影响以后新建的习题页。", async () => {
       const exercisePageFolder = validateExercisePageFolder(draft.exercisePageFolder, this.host.settings.dataFolder);
       renderExercisePageName(draft.exercisePageNameTemplate, "原文标题");
-      await this.patch({ exercisePageFolder, exercisePageNameTemplate: draft.exercisePageNameTemplate.trim() });
+      const exercisePageTags = tagsInput.values();
+      await this.patch({ exercisePageFolder, exercisePageNameTemplate: draft.exercisePageNameTemplate.trim(), exercisePageTags });
       this.exercisePageDraft = this.currentExercisePage();
     }, () => { this.exercisePageDraft = this.currentExercisePage(); });
   }
@@ -240,8 +246,8 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     return { showNoteHeatmap, showCardHeatmap, autoOpenDashboard };
   }
   private currentExercisePage(): ExercisePageDraft {
-    const { exercisePageFolder, exercisePageNameTemplate } = this.host.settings;
-    return { exercisePageFolder, exercisePageNameTemplate };
+    const { exercisePageFolder, exercisePageNameTemplate, exercisePageTags } = this.host.settings;
+    return { exercisePageFolder, exercisePageNameTemplate, exercisePageTags: [...exercisePageTags] };
   }
   private saveRow(root: HTMLElement, title: string, description: string, save: () => Promise<void>, reset: () => void): void {
     const error = root.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });

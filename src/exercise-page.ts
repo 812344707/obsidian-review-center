@@ -8,6 +8,7 @@ export const DEFAULT_EXERCISE_PAGE_NAME_TEMPLATE = "{{title}}-习题-{{date}}-{{
 export interface ExercisePageSettings {
   exercisePageFolder: string;
   exercisePageNameTemplate: string;
+  exercisePageTags: string[];
 }
 
 function pad(value: number): string { return String(value).padStart(2, "0"); }

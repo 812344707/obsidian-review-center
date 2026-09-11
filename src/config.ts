@@ -163,6 +163,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     ? data.dataFolder.replace(/^\/+|\/+$/g, "").trim() : "复习中心数据";
   let exercisePageFolder = "";
   let exercisePageNameTemplate = DEFAULT_EXERCISE_PAGE_NAME_TEMPLATE;
+  let exercisePageTags: string[] = [];
   const storedExerciseFolder = typeof data.exercisePageFolder === "string" ? data.exercisePageFolder : DEFAULT_EXERCISE_PAGE_FOLDER;
   for (const candidate of [storedExerciseFolder, DEFAULT_EXERCISE_PAGE_FOLDER, "习题页"]) {
     try { exercisePageFolder = validateExercisePageFolder(candidate, dataFolder); break; }
@@ -174,6 +175,10 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     renderExercisePageName(candidate, "原文标题", new Date(2000, 0, 2, 3, 4, 5));
     exercisePageNameTemplate = candidate;
   } catch { /* Invalid old settings fall back without touching any note. */ }
+  try {
+    exercisePageTags = parseTags(Array.isArray(data.exercisePageTags)
+      ? data.exercisePageTags.filter((tag) => typeof tag === "string").join("\n") : "");
+  } catch { /* Invalid stored tags fall back to no extra tags. */ }
   return {
     noteDaySchedulingVersion: 1,
     noteGroups, cardGroups, presets,
@@ -186,6 +191,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     dataFolder,
     exercisePageFolder: exercisePageFolder || "渐进式复习习题",
     exercisePageNameTemplate,
+    exercisePageTags,
     autoOpenDashboard: data.autoOpenDashboard === true,
   };
 }

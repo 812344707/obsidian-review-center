@@ -11,14 +11,17 @@ describe("tag scopes and migration", () => {
     expect(normalizeSettings(settings)).toEqual(settings);
     expect(settings.exercisePageFolder).toBe("习题");
     expect(settings.exercisePageNameTemplate).toBe("{{title}}-习题-{{date}}-{{time}}");
+    expect(settings.exercisePageTags).toEqual([]);
   });
   it("keeps valid exercise page settings and replaces unsafe stored values", () => {
-    const custom = normalizeSettings({ exercisePageFolder: "卡片/习题", exercisePageNameTemplate: "{{date}}-{{title}}-{{time}}" });
+    const custom = normalizeSettings({ exercisePageFolder: "卡片/习题", exercisePageNameTemplate: "{{date}}-{{title}}-{{time}}", exercisePageTags: ["#习题", "医学/练习", "#习题"] });
     expect(custom.exercisePageFolder).toBe("卡片/习题");
     expect(custom.exercisePageNameTemplate).toBe("{{date}}-{{title}}-{{time}}");
-    const unsafe = normalizeSettings({ exercisePageFolder: "复习中心数据/习题", exercisePageNameTemplate: "{{unknown}}" });
+    expect(custom.exercisePageTags).toEqual(["习题", "医学/练习"]);
+    const unsafe = normalizeSettings({ exercisePageFolder: "复习中心数据/习题", exercisePageNameTemplate: "{{unknown}}", exercisePageTags: ["合法", "非法:标签"] });
     expect(unsafe.exercisePageFolder).toBe("习题");
     expect(unsafe.exercisePageNameTemplate).toBe("{{title}}-习题-{{date}}-{{time}}");
+    expect(unsafe.exercisePageTags).toEqual([]);
     expect(normalizeSettings({ dataFolder: "习题", exercisePageFolder: "习题" }).exercisePageFolder).toBe("习题页");
   });
   it("uses OR matching, descendant boundaries, case insensitivity and specificity", () => {

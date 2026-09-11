@@ -371,7 +371,8 @@ export default class ReviewCenterPlugin extends Plugin {
     const cache = this.app.metadataCache.getFileCache(source);
     if (!cache) throw new Error("原文索引尚未就绪，请稍后再次新建习题页。");
     const sourceLink = this.app.fileManager.generateMarkdownLink(source, path);
-    const file = await this.app.vault.create(path, exercisePageMarkdown(getAllTags(cache) ?? [], sourceLink, createId("exercise")));
+    const tags = [...(getAllTags(cache) ?? []), ...this.settings.exercisePageTags];
+    const file = await this.app.vault.create(path, exercisePageMarkdown(tags, sourceLink, createId("exercise")));
     this.exercisePages.add(file.path); this.checkedExercisePages.add(file.path);
     try {
       const exerciseLink = this.app.fileManager.generateMarkdownLink(file, source.path);

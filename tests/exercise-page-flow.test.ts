@@ -76,7 +76,7 @@ function harness(openFailure = false, createFailure = false) {
     },
   };
   const plugin = new ReviewCenterPlugin(app as unknown as App, { version: "1.0.3" } as PluginManifest);
-  plugin.settings = normalizeSettings({ exercisePageNameTemplate: "{{title}}-习题" });
+  plugin.settings = normalizeSettings({ exercisePageNameTemplate: "{{title}}-习题", exercisePageTags: ["习题页", "复习/医学"] });
   plugin.service = { maintenance: false, records: [] } as never;
   const sync = vi.fn(); Reflect.set(plugin, "overlay", { sync });
   return { plugin, app, files, contents, source, sourceView, getLeaf, leaves, sync, setActiveLeaf: (leaf: unknown) => { activeLeaf = leaf; } };
@@ -90,7 +90,7 @@ describe("creating exercise pages", () => {
     await Promise.all([h.plugin.createExercisePage(), h.plugin.createExercisePage()]);
     expect(h.sourceView.editor.replaceRange).toHaveBeenNthCalledWith(1, "[[伤寒论-习题]]", { line: 2, ch: 3 });
     expect(h.sourceView.editor.replaceRange).toHaveBeenNthCalledWith(2, "[[伤寒论-习题-2]]", { line: 2, ch: 3 });
-    expect(h.contents.get("习题/伤寒论-习题.md")).toContain('tags: ["复习/医学","经典"]');
+    expect(h.contents.get("习题/伤寒论-习题.md")).toContain('tags: ["复习/医学","经典","习题页"]');
     expect(h.contents.get("习题/伤寒论-习题.md")).toContain("来源：[[资料/伤寒论|伤寒论]]");
     expect(h.files.has("习题/伤寒论-习题-2.md")).toBe(true);
     expect(h.getLeaf).toHaveBeenNthCalledWith(1, "tab");
