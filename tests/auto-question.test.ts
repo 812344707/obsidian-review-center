@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("obsidian", () => ({ requestUrl: vi.fn() }));
 
 import {
+  AUTO_QUESTION_PROVIDER_PRESETS,
   analyzeAutoQuestionBank,
   appendAutoQuestionBatch,
   assertSafeApiTransport,
@@ -100,7 +101,7 @@ describe("automatic question API contract", () => {
     })).toThrow("不支持的变量");
   });
 
-  it("builds Responses and Chat Completions structured-output requests without persisting a secret", () => {
+  it("builds Responses and broadly compatible Chat Completions requests without persisting a secret", () => {
     const responses = buildAutoQuestionRequest(settings, "secret-value", "prompt");
     expect(responses.headers.Authorization).toBe("Bearer secret-value");
     expect(responses.body).toMatchObject({ model: "study-model", store: false, text: { format: { type: "json_schema", strict: true } } });
@@ -109,9 +110,35 @@ describe("automatic question API contract", () => {
       ...settings, apiFormat: "chat-completions", endpoint: "https://gateway.example/v1/chat/completions",
     }, null, "prompt");
     expect(chat.headers).not.toHaveProperty("Authorization");
-    expect(chat.body).toMatchObject({ response_format: { type: "json_schema" } });
+    expect(chat.body).toMatchObject({ response_format: { type: "json_object" } });
     expect(normalizeSettings({ autoQuestion: { apiKeySecret: "my-key" } }).autoQuestion).toMatchObject({ apiKeySecret: "my-key" });
     expect(JSON.stringify(normalizeSettings({ autoQuestion: { apiKeySecret: "my-key" } }))).not.toContain("secret-value");
+  });
+
+  it("builds native Anthropic and Gemini requests and exposes verified provider presets", () => {
+    const anthropic = buildAutoQuestionRequest({
+      ...settings, provider: "anthropic", apiFormat: "anthropic-messages", endpoint: AUTO_QUESTION_PROVIDER_PRESETS.anthropic.endpoint,
+    }, "anthropic-secret", "prompt");
+    expect(anthropic.headers).toMatchObject({ "x-api-key": "anthropic-secret", "anthropic-version": "2023-06-01" });
+    expect(anthropic.headers).not.toHaveProperty("Authorization");
+    expect(anthropic.body).toMatchObject({
+      max_tokens: 8192,
+      output_config: { format: { type: "json_schema", schema: { type: "object" } } },
+    });
+
+    const gemini = buildAutoQuestionRequest({
+      ...settings, provider: "gemini", apiFormat: "gemini-generate-content", endpoint: AUTO_QUESTION_PROVIDER_PRESETS.gemini.endpoint,
+      model: "gemini-test/model",
+    }, "gemini-secret", "prompt");
+    expect(gemini.url).toBe("https://generativelanguage.googleapis.com/v1beta/models/gemini-test%2Fmodel:generateContent");
+    expect(gemini.headers).toMatchObject({ "x-goog-api-key": "gemini-secret" });
+    expect(gemini.body).toMatchObject({ generationConfig: { responseMimeType: "application/json", responseJsonSchema: { type: "object" } } });
+    expect(AUTO_QUESTION_PROVIDER_PRESETS).toMatchObject({
+      deepseek: { apiFormat: "chat-completions" }, qwen: { apiFormat: "chat-completions" },
+      kimi: { apiFormat: "chat-completions" }, zhipu: { apiFormat: "chat-completions" },
+      siliconflow: { apiFormat: "chat-completions" }, openrouter: { apiFormat: "chat-completions" },
+      ollama: { apiFormat: "chat-completions" },
+    });
   });
 
   it("parses both response formats, removes duplicates and validates transport and stored settings", () => {
@@ -123,9 +150,12 @@ describe("automatic question API contract", () => {
       .toEqual([{ question: "新题？", answer: "答案", explanation: "依据" }]);
     expect(parseAutoQuestionResponse("chat-completions", { choices: [{ message: { content: payload } }] }, 1))
       .toHaveLength(1);
+    expect(parseAutoQuestionResponse("anthropic-messages", { content: [{ type: "text", text: payload }] }, 1)).toHaveLength(1);
+    expect(parseAutoQuestionResponse("gemini-generate-content", { candidates: [{ content: { parts: [{ text: payload }] } }] }, 1)).toHaveLength(1);
     expect(validateAutoQuestionEndpoint("https://api.example/v1/responses")).toBe("https://api.example/v1/responses");
     expect(() => assertSafeApiTransport("http://api.example/v1")).toThrow("HTTPS");
     expect(() => assertSafeApiTransport("http://127.0.0.1:11434/v1/chat/completions")).not.toThrow();
+    expect(validateAutoQuestionEndpoint("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")).toContain("{model}");
     expect(validateAutoQuestionFolder("题库/骨科/", "复习中心数据")).toBe("题库/骨科");
     expect(() => validateAutoQuestionFolder("复习中心数据/题库", "复习中心数据")).toThrow();
 

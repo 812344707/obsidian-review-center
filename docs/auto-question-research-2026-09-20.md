@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | [Obsidian Quiz Generator](https://github.com/ECuiDev/obsidian-quiz-generator) | 多模型、按文件或文件夹取材、保存题目、多题型 | 借鉴设置分层；不复制其题库和 UI |
 | [Obsidian Flashcards LLM](https://github.com/crybot/obsidian-flashcards-llm) | 自定义提示词、控制题量、输出到间隔重复格式 | 借鉴提示词与题量配置 |
-| [Text Generator](https://github.com/nhaouari/obsidian-textgenerator-plugin) | 较成熟的提供商和模板架构 | 体量过大，不作为依赖；首版只支持 Responses 和兼容 Chat Completions |
+| [Text Generator](https://github.com/nhaouari/obsidian-textgenerator-plugin) | 较成熟的提供商和模板架构 | 体量过大，不作为依赖；采用“提供商预设与传输协议分层”的轻量设计 |
 | [Obsidian Spaced Repetition](https://github.com/st3v3nmw/obsidian-spaced-repetition) | 评分和间隔重复工作流 | 本项目继续使用已有 FSRS 与评分历史，不更换排程系统 |
 | [NextGen Quiz AI](https://github.com/0xkillaflow/nextgen-quiz-ai) | 结构化生成、写入前校验、作答历史 | 借鉴“先验证再写入”；不采用把密钥直接保存在插件数据中的做法 |
 | [DeepTutor](https://github.com/HKUDS/DeepTutor) | 以掌握度作为继续学习闸门 | 借鉴硬闸门；不引入独立学习平台 |
@@ -34,7 +34,8 @@
 
 ## API、隐私与写入安全
 
-- 支持 OpenAI Responses 的 `text.format` JSON Schema，以及 OpenAI 兼容 Chat Completions 的 `response_format` JSON Schema。
+- 支持 OpenAI Responses、Anthropic Messages、Google Gemini generateContent 三种原生结构化协议，以及通用 OpenAI 兼容 Chat Completions。兼容协议使用更广泛支持的 JSON object 模式，返回后仍由插件执行严格字段、长度、去重和题库解析校验。
+- 提供 OpenAI、Anthropic、Gemini、DeepSeek、阿里云百炼／通义千问、Kimi、智谱、SiliconFlow、OpenRouter、Ollama 与自定义预设。预设只负责协议和地址，不锁定快速变化的模型版本；模型 ID 由用户按控制台填写。
 - API 密钥值由 [Obsidian SecretStorage](https://docs.obsidian.md/Reference/TypeScript+API/SecretStorage) 保存；插件设置只记录密钥名称。
 - 使用 API 时会把原文、已有题目和相关评分表现发送到用户指定的服务。默认关闭自动模式，数据政策由所选服务商负责。
 - 带密钥的非本机地址必须使用 HTTPS；本机 `localhost`、`127.0.0.1`、`::1` 可使用 HTTP。
@@ -45,7 +46,7 @@
 ## 开发分支使用路径
 
 1. 先确认“复习标签 → 知识点复习标签”能识别准备写入题库的标签或文件夹。
-2. 在“设置 → 渐进式复习 → 自动出题”选择协议，填写完整 API 地址和模型 ID，并通过 SecretStorage 选择密钥；本机无鉴权接口可留空密钥。
+2. 在“设置 → 渐进式复习 → 自动出题”选择提供商预设，核对协议、地址和模型 ID，并通过 SecretStorage 选择密钥；本机 Ollama 等无鉴权接口可留空密钥。
 3. 设置题库文件夹、题库标签、每批题数、停止掌握率、总题量上限、原文字符上限和提示词，保存。
 4. 打开一篇原文，点击设置页“评估并继续”，或从命令面板运行“渐进式复习：自动出题：评估并继续”。首批题目会写入 `{{原文标题}}-自动题库.md`。
 5. 整理数据后正常复习这些卡片。自动评估开启时，每次成功评分都会先做本地闸门判断；尚有未作答题目、已达标或已到上限时都不会请求 API。
@@ -54,7 +55,7 @@
 
 ## 当前未覆盖
 
-- 不支持任意自定义请求头、非 Bearer 鉴权或各厂商专用协议。
+- 不支持任意自定义请求头；当前专用鉴权仅覆盖 Anthropic `x-api-key`、Gemini `x-goog-api-key` 和常见 Bearer Token。
 - 不做后台定时轮询；自动评估只由自动题库卡片评分触发。
 - 没有真实 API 密钥的联网验收；自动化测试只验证请求结构、响应解析和错误路径。
 - 真实 Obsidian 设置页、SecretStorage 交互和端到端写入已在隔离测试库完成；真实第三方模型提供商、实体移动端与跨设备同步仍未验收。

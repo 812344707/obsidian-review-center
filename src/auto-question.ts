@@ -2,6 +2,7 @@ import { effectiveReviews } from "./activity";
 import { parseReviewCards } from "./parser";
 import type {
   AutoQuestionApiFormat,
+  AutoQuestionProvider,
   AutoQuestionSettings,
   HistoryEvent,
   SourceRecord,
@@ -28,6 +29,7 @@ export const DEFAULT_AUTO_QUESTION_PROMPT = `你是严谨的学习出题助手�
 
 export const DEFAULT_AUTO_QUESTION_SETTINGS: AutoQuestionSettings = {
   enabled: false,
+  provider: "openai",
   apiFormat: "responses",
   endpoint: "https://api.openai.com/v1/responses",
   model: "",
@@ -39,6 +41,27 @@ export const DEFAULT_AUTO_QUESTION_SETTINGS: AutoQuestionSettings = {
   masteryThreshold: 0.9,
   maxQuestions: 50,
   maxSourceCharacters: 30_000,
+};
+
+export interface AutoQuestionProviderPreset {
+  label: string;
+  apiFormat: AutoQuestionApiFormat;
+  endpoint: string;
+  modelHint: string;
+}
+
+export const AUTO_QUESTION_PROVIDER_PRESETS: Record<AutoQuestionProvider, AutoQuestionProviderPreset> = {
+  openai: { label: "OpenAI", apiFormat: "responses", endpoint: "https://api.openai.com/v1/responses", modelHint: "填写 OpenAI 模型 ID" },
+  anthropic: { label: "Anthropic Claude", apiFormat: "anthropic-messages", endpoint: "https://api.anthropic.com/v1/messages", modelHint: "填写 Claude 模型 ID" },
+  gemini: { label: "Google Gemini", apiFormat: "gemini-generate-content", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent", modelHint: "填写 Gemini 模型 ID" },
+  deepseek: { label: "DeepSeek", apiFormat: "chat-completions", endpoint: "https://api.deepseek.com/chat/completions", modelHint: "例如 deepseek-chat" },
+  qwen: { label: "阿里云百炼 / 通义千问", apiFormat: "chat-completions", endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", modelHint: "例如 qwen-plus" },
+  kimi: { label: "Kimi / Moonshot", apiFormat: "chat-completions", endpoint: "https://api.moonshot.cn/v1/chat/completions", modelHint: "填写控制台中的 Kimi 模型 ID" },
+  zhipu: { label: "智谱 GLM", apiFormat: "chat-completions", endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions", modelHint: "填写 GLM 模型 ID" },
+  siliconflow: { label: "硅基流动 SiliconFlow", apiFormat: "chat-completions", endpoint: "https://api.siliconflow.cn/v1/chat/completions", modelHint: "填写硅基流动模型 ID" },
+  openrouter: { label: "OpenRouter", apiFormat: "chat-completions", endpoint: "https://openrouter.ai/api/v1/chat/completions", modelHint: "填写 provider/model" },
+  ollama: { label: "Ollama（本机）", apiFormat: "chat-completions", endpoint: "http://127.0.0.1:11434/v1/chat/completions", modelHint: "填写本机已安装的模型标签" },
+  custom: { label: "自定义", apiFormat: "chat-completions", endpoint: "https://api.example.com/v1/chat/completions", modelHint: "填写服务商模型 ID" },
 };
 
 export interface GeneratedQuestion {
@@ -121,17 +144,21 @@ export function validateAutoQuestionFolder(value: string, dataFolder: string): s
 
 export function validateAutoQuestionEndpoint(value: string): string {
   const endpoint = value.trim();
+  const placeholders = endpoint.match(/\{model\}/g) ?? [];
+  if (placeholders.length > 1 || /[{}]/.test(endpoint.replace("{model}", ""))) {
+    throw new Error("API 地址只允许使用一个 {model} 模型占位符。");
+  }
   let url: URL;
-  try { url = new URL(endpoint); }
+  try { url = new URL(endpoint.replace("{model}", "model-placeholder")); }
   catch { throw new Error("请输入完整的 API 地址，例如 https://api.openai.com/v1/responses。"); }
   if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.hash) {
     throw new Error("API 地址仅支持 http/https，且不得在网址中嵌入账号、密码或片段。");
   }
-  return url.toString();
+  return endpoint.includes("{model}") ? endpoint : url.toString();
 }
 
 export function assertSafeApiTransport(endpoint: string): void {
-  const url = new URL(endpoint);
+  const url = new URL(endpoint.replace("{model}", "model-placeholder"));
   const loopback = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
   if (url.protocol !== "https:" && !loopback) {
     throw new Error("非本机 API 地址必须使用 HTTPS，以免学习内容和密钥明文传输。");
@@ -214,22 +241,34 @@ export function buildAutoQuestionRequest(
   assertSafeApiTransport(url);
   if (!settings.model.trim()) throw new Error("请先设置自动出题模型名称。");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (settings.apiFormat === "anthropic-messages") {
+    headers["anthropic-version"] = "2023-06-01";
+    if (apiKey) headers["x-api-key"] = apiKey;
+  } else if (settings.apiFormat === "gemini-generate-content") {
+    if (apiKey) headers["x-goog-api-key"] = apiKey;
+  } else if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   const format = { type: "json_schema", name: "review_questions", strict: true, schema: QUESTION_SCHEMA };
-  const body = settings.apiFormat === "responses" ? {
+  if (settings.apiFormat === "responses") return { url, headers, body: {
+    model: settings.model.trim(), store: false, input: `${prompt}\n\n${OUTPUT_CONTRACT}`, text: { format },
+  } };
+  if (settings.apiFormat === "anthropic-messages") return { url, headers, body: {
+    model: settings.model.trim(), max_tokens: 8192, system: OUTPUT_CONTRACT,
+    messages: [{ role: "user", content: prompt }],
+    output_config: { format: { type: "json_schema", schema: QUESTION_SCHEMA } },
+  } };
+  if (settings.apiFormat === "gemini-generate-content") {
+    const resolvedUrl = url.includes("{model}") ? url.replace("{model}", encodeURIComponent(settings.model.trim())) : url;
+    return { url: resolvedUrl, headers, body: {
+      systemInstruction: { parts: [{ text: OUTPUT_CONTRACT }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json", responseJsonSchema: QUESTION_SCHEMA },
+    } };
+  }
+  return { url, headers, body: {
     model: settings.model.trim(),
-    store: false,
-    input: `${prompt}\n\n${OUTPUT_CONTRACT}`,
-    text: { format },
-  } : {
-    model: settings.model.trim(),
-    messages: [
-      { role: "system", content: OUTPUT_CONTRACT },
-      { role: "user", content: prompt },
-    ],
-    response_format: { type: "json_schema", json_schema: { name: format.name, strict: true, schema: format.schema } },
-  };
-  return { url, headers, body };
+    messages: [{ role: "system", content: OUTPUT_CONTRACT }, { role: "user", content: prompt }],
+    response_format: { type: "json_object" },
+  } };
 }
 
 export function parseAutoQuestionResponse(
@@ -238,7 +277,10 @@ export function parseAutoQuestionResponse(
   expectedCount: number,
   existingQuestions: string[] = [],
 ): GeneratedQuestion[] {
-  const text = format === "responses" ? responsesText(response) : chatCompletionText(response);
+  const text = format === "responses" ? responsesText(response)
+    : format === "anthropic-messages" ? anthropicMessageText(response)
+      : format === "gemini-generate-content" ? geminiContentText(response)
+        : chatCompletionText(response);
   let parsed: unknown;
   try { parsed = JSON.parse(stripJsonFence(text)); }
   catch { throw new Error("大模型未返回可解析的 JSON 题目。"); }
@@ -343,6 +385,23 @@ function chatCompletionText(response: unknown): string {
     if (text) return text;
   }
   throw new Error("大模型响应中没有文本内容。");
+}
+
+function anthropicMessageText(response: unknown): string {
+  if (!isObject(response) || !Array.isArray(response.content)) throw new Error("Anthropic 响应中没有 content。");
+  const text = response.content.filter(isObject)
+    .map((item) => item.type === "text" && typeof item.text === "string" ? item.text : "").join("");
+  if (!text) throw new Error("Anthropic 响应中没有文本内容。");
+  return text;
+}
+
+function geminiContentText(response: unknown): string {
+  if (!isObject(response) || !isUnknownArray(response.candidates)) throw new Error("Gemini 响应中没有 candidates。");
+  const first = response.candidates[0];
+  if (!isObject(first) || !isObject(first.content) || !Array.isArray(first.content.parts)) throw new Error("Gemini 响应中没有 content parts。");
+  const text = first.content.parts.filter(isObject).map((part) => typeof part.text === "string" ? part.text : "").join("");
+  if (!text) throw new Error("Gemini 响应中没有文本内容。");
+  return text;
 }
 
 function stripJsonFence(value: string): string {

@@ -1,5 +1,14 @@
 # 更新记录
 
+## 1.5.0 · 多厂商接口与迁移收口（2026-09-20）
+
+- 自动出题新增 OpenAI、Anthropic、Google Gemini、DeepSeek、阿里云百炼／通义千问、Kimi、智谱、SiliconFlow、OpenRouter、Ollama 与自定义服务预设。
+- 新增 Anthropic Messages 与 Gemini generateContent 原生结构化适配；保留 OpenAI Responses，并把通用 Chat Completions 调整为覆盖面更广的 JSON object 模式，返回后继续执行本地严格校验。
+- 数据目录迁移在新目录逐文件核对、保存设置并重新读取成功后，会把未发生同步变化的旧目录移入系统废纸篓或知识库 `.trash`；同步竞争时保留旧目录并提示。
+- 数据与备份页新增“清理迁移遗留目录”，明确输入旧路径并二次确认后可处理旧版残留，当前活动目录及其父子目录受到硬保护。
+
+[下载与发布说明](https://github.com/812344707/obsidian-review-center/releases/tag/1.5.0) · [升级说明](docs/1.5.0-upgrade.md) · [验证记录](docs/1.5.0-validation.md)。
+
 ## 1.4.1 · 更新保留设置（2026-09-20）
 
 - 插件设置除原 `data.json` 外，新增知识库 `.review-center/settings.json` 稳定镜像；更新器重建、丢失或回滚插件设置时，启动会恢复较新的有效副本。

@@ -8,6 +8,7 @@ import { groupTag, replaceGroupTag, setReviewTags, tagGroups } from "./tag-group
 import { groupFilter } from "./recognition";
 import { renderExercisePageName, validateExercisePageFolder } from "./exercise-page";
 import {
+  AUTO_QUESTION_PROVIDER_PRESETS,
   assertSafeApiTransport,
   renderAutoQuestionPrompt,
   validateAutoQuestionEndpoint,
@@ -30,6 +31,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private page: SettingsPage = "groups";
   private cleaners: Array<() => void> = [];
   private folderDraft?: string;
+  private inactiveFolderDraft = "";
   private exercisePageDraft?: ExercisePageDraft;
   private autoQuestionDraft?: AutoQuestionDraft;
   private displayDraft?: DisplayDraft;
@@ -94,26 +96,38 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     root.createEl("p", { cls: "review-settings-intro", text: "从当前笔记取材，把问答卡写入指定题库。题库还有未作答卡片时等待；全部作答后，掌握率未达标才继续出题，达标或到上限即停止。" });
     new Setting(root).setName("复习后自动评估").setDesc("默认关闭。开启后，只在最后一张未作答的自动题目完成评分时评估；仅在需要继续时发起一次 API 请求。")
       .addToggle((toggle) => toggle.setValue(draft.enabled).onChange((value) => { draft.enabled = value; }));
-    new Setting(root).setName("API 协议").setDesc("新版结构化接口适合 OpenAI；兼容结构化接口适合常见网关。")
+    new Setting(root).setName("API 提供商").setDesc("选择常见服务可自动填写协议和地址；模型 ID 与密钥仍由你填写。选择自定义后可接其他服务。")
+      .addDropdown((dropdown) => {
+        for (const [id, preset] of Object.entries(AUTO_QUESTION_PROVIDER_PRESETS)) dropdown.addOption(id, preset.label);
+        dropdown.setValue(draft.provider).onChange((value) => {
+          const provider = value in AUTO_QUESTION_PROVIDER_PRESETS ? value as keyof typeof AUTO_QUESTION_PROVIDER_PRESETS : "custom";
+          const preset = AUTO_QUESTION_PROVIDER_PRESETS[provider];
+          draft.provider = provider;
+          if (provider !== "custom") {
+            draft.apiFormat = preset.apiFormat;
+            draft.endpoint = preset.endpoint;
+          }
+          this.update();
+        });
+      });
+    new Setting(root).setName("API 协议").setDesc("支持 OpenAI 新版接口、OpenAI 兼容聊天补全、Anthropic 消息接口与 Gemini 内容生成接口。")
       .addDropdown((dropdown) => dropdown
         .addOption("responses", "OpenAI 新版接口")
-        .addOption("chat-completions", "OpenAI 兼容接口")
+        .addOption("chat-completions", "OpenAI 兼容聊天补全")
+        .addOption("anthropic-messages", "Anthropic 消息接口")
+        .addOption("gemini-generate-content", "Google Gemini 内容生成")
         .setValue(draft.apiFormat)
         .onChange((value) => {
-          const previous = draft.apiFormat;
-          draft.apiFormat = value === "chat-completions" ? "chat-completions" : "responses";
-          const defaults = {
-            responses: "https://api.openai.com/v1/responses",
-            "chat-completions": "https://api.openai.com/v1/chat/completions",
-          } as const;
-          if (draft.endpoint === defaults[previous]) draft.endpoint = defaults[draft.apiFormat];
+          draft.apiFormat = value === "chat-completions" || value === "anthropic-messages" || value === "gemini-generate-content"
+            ? value : "responses";
+          draft.provider = "custom";
           this.update();
         }));
     new Setting(root).setName("API 地址").setDesc("请填完整请求地址。原文与题库表现会发送给该服务；其数据政策由对应提供商决定。")
       .addText((text) => text.setPlaceholder("API 请求地址").setValue(draft.endpoint)
         .onChange((value) => { draft.endpoint = value; }));
-    new Setting(root).setName("模型名称").setDesc("例如 GPT-5-mini，或兼容网关提供的模型 ID。")
-      .addText((text) => text.setPlaceholder("填写模型 ID").setValue(draft.model).onChange((value) => { draft.model = value; }));
+    new Setting(root).setName("模型名称").setDesc("必须与提供商控制台显示的模型 ID 完全一致；预设不会锁定某个易过时的模型版本。")
+      .addText((text) => text.setPlaceholder(AUTO_QUESTION_PROVIDER_PRESETS[draft.provider].modelHint).setValue(draft.model).onChange((value) => { draft.model = value; }));
     new Setting(root).setName("API 密钥").setDesc("从 Obsidian SecretStorage 选择或新建。设置文件只保存密钥名称，不保存密钥值；无密钥的本地接口可留空。")
       .addComponent((element) => new SecretComponent(this.app, element).setValue(draft.apiKeySecret)
         .onChange((value) => { draft.apiKeySecret = value; }));
@@ -160,6 +174,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
       });
       await this.patch({ autoQuestion: {
         enabled: draft.enabled,
+        provider: draft.provider,
         apiFormat: draft.apiFormat,
         endpoint,
         model: draft.model.trim(),
@@ -279,7 +294,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   private renderData(root: HTMLElement): void {
     const message = root.createDiv({ cls: "review-setting-error", attr: { role: "status" } });
     this.folderDraft ??= this.host.settings.dataFolder;
-    new Setting(root).setName("复习数据目录").setDesc("知识库内的相对路径。输入不会切换目录；应用时复制并核对数据，旧目录保留为备份。")
+    new Setting(root).setName("复习数据目录").setDesc("知识库内的相对路径。应用后先复制、逐文件核对并重新读取新目录，再把未发生同步变化的旧目录移入系统废纸篓；系统废纸篓不可用时移入知识库 .trash。")
       .addText((t) => {
         t.setValue(this.folderDraft!).onChange((v) => { this.folderDraft = v; });
         const suggest = folderInput(this.app, t.inputEl, (v) => { this.folderDraft = v; });
@@ -289,9 +304,20 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
         this.migrating = true; b.setDisabled(true); message.setText("正在核对和迁移，请稍候…");
         try {
           await this.host.migrateDataFolder(this.folderDraft!); this.folderDraft = this.host.settings.dataFolder;
-          message.setText("当前目录：" + this.folderDraft + "。旧目录继续保留。");
+          message.setText("当前目录：" + this.folderDraft + "。旧目录已安全移入废纸篓；若迁移期间发生同步变化，插件会保留并提示。");
         } catch (error) { message.setText(String(error)); }
         finally { this.migrating = false; b.setDisabled(false); }
+      })()));
+    new Setting(root).setName("清理迁移遗留目录").setDesc("仅用于旧版迁移后仍残留的非活动目录。必须明确填写旧路径并再次确认；当前数据目录永远不会被清理。")
+      .addText((t) => {
+        t.setPlaceholder("例如 复习中心数据").setValue(this.inactiveFolderDraft).onChange((v) => { this.inactiveFolderDraft = v; });
+        const suggest = folderInput(this.app, t.inputEl, (v) => { this.inactiveFolderDraft = v; t.setValue(v); });
+        this.cleaners.push(() => suggest.close());
+      })
+      .addButton((b) => b.setDestructive().setButtonText("移入废纸篓").onClick(() => void (async () => {
+        message.setText("");
+        try { await this.host.trashInactiveDataFolder(this.inactiveFolderDraft); this.inactiveFolderDraft = ""; this.update(); }
+        catch (error) { message.setText(error instanceof Error ? error.message : String(error)); }
       })()));
     new Setting(root).setName("内容与备份").setDesc("管理暂停、记忆难点、内容变更，以及导出和恢复备份。")
       .addButton((b) => b.setButtonText("打开管理").onClick(() => this.openManagement()));

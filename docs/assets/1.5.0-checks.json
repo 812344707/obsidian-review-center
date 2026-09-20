@@ -1,0 +1,14 @@
+{
+  "version": "1.5.0",
+  "date": "2026-09-20",
+  "testFiles": 48,
+  "tests": 316,
+  "timezones": ["Asia/Shanghai", "America/New_York"],
+  "zipName": "review-center-1.5.0.zip",
+  "zipFilesChecked": 6,
+  "bytes": 418529,
+  "sha256": "931be14d936dd5f6f574b9263526cb79a794e161cb89273ca5f70d068e4d6763",
+  "reproduciblePackage": true,
+  "optimizerCheck": "passed",
+  "externalApiCalls": false
+}

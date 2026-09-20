@@ -30,7 +30,7 @@ import type {
 } from "./types";
 import { createId, pathIsInside, cloneValue, hashText } from "./utils";
 import { normalizeSettings, validateDataFolder, groupsFor, resolveGroup } from "./config";
-import { copyDataDirectory } from "./data-migration";
+import { copyDataDirectory, trashInactiveDataDirectory } from "./data-migration";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import { applyBulkTags, type BulkTagPreview, type BulkTagRequest, type BulkTagResult } from "./tags";
 import { OptionsWorkspace, ReviewOptionsModal, ConfirmActionModal } from "./options";
@@ -220,6 +220,7 @@ export default class ReviewCenterPlugin extends Plugin {
   async migrateDataFolder(value: string): Promise<void> {
     const target = validateDataFolder(value);
     if (target === this.settings.dataFolder) return;
+    let cleanup: (() => Promise<"system" | "local">) | undefined;
     await this.refreshData();
     await this.service.runMaintenance(async () => {
       await this.store.flush();
@@ -232,9 +233,42 @@ export default class ReviewCenterPlugin extends Plugin {
       // Save before switching the store's live path. Failure leaves the old path active.
       this.settings = await this.persistSettingsSnapshot(next);
       try { await migration.complete(); } catch (error) { console.warn("[渐进式复习] 目录已切换，完成标记待重试", error); }
+      cleanup = migration.trashSource;
     });
     await this.refreshData();
-    new Notice("复习数据已迁移并核对，旧目录保留为备份");
+    try {
+      const location = await cleanup!();
+      new Notice(`复习数据已迁移并核对，旧目录已移入${location === "system" ? "系统废纸篓" : "知识库 .trash"}`);
+    } catch (error) {
+      console.warn("[渐进式复习] 新目录已启用，但旧目录未清理", error);
+      new Notice(`复习数据已迁移并启用；为防止丢失，同步变化后的旧目录暂未清理：${error instanceof Error ? error.message : String(error)}`, 12000);
+    }
+  }
+
+  async trashInactiveDataFolder(value: string): Promise<void> {
+    const inactive = validateDataFolder(value);
+    const current = this.settings.dataFolder;
+    if (inactive === current) throw new Error("不能清理当前正在使用的复习数据目录。");
+    await new Promise<void>((resolve, reject) => {
+      new ConfirmActionModal(
+        this,
+        "清理迁移遗留目录",
+        `将“${inactive}”及其全部内容移入废纸篓。当前使用中的“${current}”不会改动；若启用了同步，本次删除也可能同步到其他设备。`,
+        async () => {
+          await this.service.runMaintenance(async () => {
+            await this.store.flush();
+            await this.store.writeBackup({
+              schemaVersion: 4, exportedAt: new Date().toISOString(), pluginVersion: this.manifest.version,
+              settings: this.settings, records: this.service.records, history: this.service.history,
+            }, "pre-legacy-folder-cleanup");
+            const location = await trashInactiveDataDirectory(this.app.vault.adapter, current, inactive);
+            new Notice(`旧目录已移入${location === "system" ? "系统废纸篓" : "知识库 .trash"}`);
+          });
+          resolve();
+        },
+        () => reject(new Error("已取消清理旧目录。")),
+      ).open();
+    });
   }
 
   async runBulkTags(request: BulkTagRequest, preview: BulkTagPreview[]): Promise<BulkTagResult[]> {

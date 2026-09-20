@@ -1,4 +1,4 @@
-import type { ReviewCenterSettings, ReviewGroup, ReviewMode, ReviewParameters, ReviewPreset, NodeOptions } from "./types";
+import type { AutoQuestionApiFormat, ReviewCenterSettings, ReviewGroup, ReviewMode, ReviewParameters, ReviewPreset, NodeOptions } from "./types";
 import { createId, localDayKey } from "./utils";
 import { normalizeRecognition, recognitionPriority, recognitionTags } from "./recognition";
 import {
@@ -8,6 +8,7 @@ import {
   validateExercisePageFolder,
 } from "./exercise-page";
 import {
+  AUTO_QUESTION_PROVIDER_PRESETS,
   DEFAULT_AUTO_QUESTION_SETTINGS,
   assertSafeApiTransport,
   renderAutoQuestionPrompt,
@@ -213,9 +214,14 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     });
     autoPrompt = candidate;
   } catch { /* Invalid stored prompt variables fall back without sending data. */ }
+  const autoFormat: AutoQuestionApiFormat = auto.apiFormat === "chat-completions" || auto.apiFormat === "anthropic-messages" || auto.apiFormat === "gemini-generate-content"
+    ? auto.apiFormat : "responses";
   const autoQuestion = {
     enabled: auto.enabled === true,
-    apiFormat: auto.apiFormat === "chat-completions" ? "chat-completions" as const : "responses" as const,
+    provider: typeof auto.provider === "string" && auto.provider in AUTO_QUESTION_PROVIDER_PRESETS
+      ? auto.provider as keyof typeof AUTO_QUESTION_PROVIDER_PRESETS
+      : inferAutoQuestionProvider(autoEndpoint),
+    apiFormat: autoFormat,
     endpoint: autoEndpoint,
     model: typeof auto.model === "string" ? auto.model.trim() : DEFAULT_AUTO_QUESTION_SETTINGS.model,
     apiKeySecret: typeof auto.apiKeySecret === "string" ? auto.apiKeySecret.trim() : "",
@@ -243,6 +249,12 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     autoQuestion,
     autoOpenDashboard: data.autoOpenDashboard === true,
   };
+}
+
+function inferAutoQuestionProvider(endpoint: string): keyof typeof AUTO_QUESTION_PROVIDER_PRESETS {
+  const match = Object.entries(AUTO_QUESTION_PROVIDER_PRESETS)
+    .find(([provider, preset]) => provider !== "custom" && preset.endpoint === endpoint);
+  return match ? match[0] as keyof typeof AUTO_QUESTION_PROVIDER_PRESETS : "custom";
 }
 
 export const DEFAULT_SETTINGS = normalizeSettings(null);

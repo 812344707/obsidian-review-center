@@ -38,14 +38,19 @@ async function filesUnder(adapter: DataAdapter, root: string): Promise<string[]>
   return result.sort();
 }
 
-/** Caller holds the maintenance lock until commit or failure. Sources are never removed. */
+/** Caller holds the maintenance lock through copy and settings commit. Source cleanup is separately re-verified and recoverable. */
 export async function copyDataDirectory(adapter: DataAdapter, sourceValue: string, targetValue: string): Promise<{
+  source: string;
   target: string;
   complete: () => Promise<void>;
+  trashSource: () => Promise<"system" | "local">;
 }> {
   const source = validateDataFolder(sourceValue);
   const target = validateDataFolder(targetValue);
-  if (source === target) return { target, complete: async () => undefined };
+  if (source === target) return {
+    source, target, complete: async () => undefined,
+    trashSource: async () => { throw new Error("新旧数据目录相同，不能清理当前目录。"); },
+  };
   if (pathIsInside(source, target) || pathIsInside(target, source)) throw new Error("新旧数据目录不能互相包含。");
   const journalPath = source + "/migrations/directory-" + hashText(target) + ".json";
   const markerPath = target + "/.review-center-migration.json";
@@ -108,25 +113,67 @@ export async function copyDataDirectory(adapter: DataAdapter, sourceValue: strin
       throw new Error("数据复制核对失败，仍使用旧目录：" + relative);
     }
   }
-  // An external sync client can write despite the local maintenance lock.
-  const latestFiles = (await filesUnder(adapter, source)).filter((path) => {
-    const relative = path.slice(source.length + 1);
-    return relative !== ".review-center-migration.json" && !/^migrations\/directory-/.test(relative);
-  });
-  if (JSON.stringify(latestFiles) !== JSON.stringify(sourceFiles)) throw new Error("迁移期间旧目录文件发生变化，请重试。");
-  for (const [relative, data] of contents) {
-    if (await digest(await adapter.readBinary(source + "/" + relative)) !== await digest(data)) {
-      throw new Error("迁移期间旧数据发生变化，仍使用旧目录，请重试。");
-    }
-  }
+  await assertSourceUnchanged(adapter, source, sourceFiles, contents, "迁移期间");
   journal.phase = "verified";
   journal.entries = entries;
   await adapter.write(journalPath, JSON.stringify(journal, null, 2));
   return {
+    source,
     target,
     complete: async () => {
       journal.phase = "complete";
       await adapter.write(journalPath, JSON.stringify(journal, null, 2));
     },
+    trashSource: async () => {
+      // Sync can still write after the maintenance lock is released. Never trash a changed snapshot.
+      await assertSourceUnchanged(adapter, source, sourceFiles, contents, "准备清理时");
+      if (await adapter.trashSystem(source)) {
+        if (await adapter.exists(source)) throw new Error("系统废纸篓操作后旧目录仍存在，请检查同步状态。");
+        return "system";
+      }
+      await adapter.trashLocal(source);
+      if (await adapter.exists(source)) throw new Error("知识库废纸篓操作后旧目录仍存在，请检查同步状态。");
+      return "local";
+    },
   };
+}
+
+async function assertSourceUnchanged(
+  adapter: DataAdapter,
+  source: string,
+  sourceFiles: string[],
+  contents: Map<string, ArrayBuffer>,
+  phase: string,
+): Promise<void> {
+  const latestFiles = (await filesUnder(adapter, source)).filter((path) => {
+    const relative = path.slice(source.length + 1);
+    return relative !== ".review-center-migration.json" && !/^migrations\/directory-/.test(relative);
+  });
+  if (JSON.stringify(latestFiles) !== JSON.stringify(sourceFiles)) throw new Error(`${phase}旧目录文件发生变化，已保留旧目录，请重试。`);
+  for (const [relative, data] of contents) {
+    if (await digest(await adapter.readBinary(source + "/" + relative)) !== await digest(data)) {
+      throw new Error(`${phase}旧数据发生变化，已保留旧目录，请重试。`);
+    }
+  }
+}
+
+/** Explicit cleanup for a directory the user has confirmed is no longer active. */
+export async function trashInactiveDataDirectory(
+  adapter: DataAdapter,
+  activeValue: string,
+  inactiveValue: string,
+): Promise<"system" | "local"> {
+  const active = validateDataFolder(activeValue);
+  const inactive = validateDataFolder(inactiveValue);
+  if (active === inactive) throw new Error("不能清理当前正在使用的复习数据目录。");
+  if (pathIsInside(active, inactive) || pathIsInside(inactive, active)) throw new Error("当前目录与待清理目录不能互相包含。");
+  if (!(await adapter.exists(inactive))) throw new Error("待清理的旧目录不存在。");
+  if ((await adapter.stat(inactive))?.type !== "folder") throw new Error("待清理路径不是文件夹。");
+  if (await adapter.trashSystem(inactive)) {
+    if (await adapter.exists(inactive)) throw new Error("系统废纸篓操作后旧目录仍存在，请检查同步状态。");
+    return "system";
+  }
+  await adapter.trashLocal(inactive);
+  if (await adapter.exists(inactive)) throw new Error("知识库废纸篓操作后旧目录仍存在，请检查同步状态。");
+  return "local";
 }

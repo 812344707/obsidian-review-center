@@ -155,11 +155,25 @@ export interface ReviewGroup {
   parameters: ReviewParameters;
 }
 
-export type AutoQuestionApiFormat = "responses" | "chat-completions";
+export type AutoQuestionApiFormat = "responses" | "chat-completions" | "anthropic-messages" | "gemini-generate-content";
+export type AutoQuestionProvider =
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "deepseek"
+  | "qwen"
+  | "kimi"
+  | "zhipu"
+  | "siliconflow"
+  | "openrouter"
+  | "ollama"
+  | "custom";
 
 export interface AutoQuestionSettings {
   /** When enabled, rating the last unanswered generated card evaluates the bank. */
   enabled: boolean;
+  /** UI preset only. The protocol and endpoint remain editable. */
+  provider: AutoQuestionProvider;
   apiFormat: AutoQuestionApiFormat;
   endpoint: string;
   model: string;
