@@ -1,24 +1,37 @@
-import { App, PluginSettingTab, Setting, type SettingDefinitionItem } from "obsidian";
+import { App, PluginSettingTab, SecretComponent, Setting, type SettingDefinitionItem } from "obsidian";
 import { groupsFor, parseTags } from "./config";
-import type { ReviewCenterSettings, ReviewMode } from "./types";
+import type { AutoQuestionSettings, ReviewCenterSettings, ReviewMode } from "./types";
 import { folderInput, tagInput, TagInput } from "./inputs";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import type ReviewCenterPlugin from "./main";
 import { groupTag, replaceGroupTag, setReviewTags, tagGroups } from "./tag-groups";
 import { groupFilter } from "./recognition";
 import { renderExercisePageName, validateExercisePageFolder } from "./exercise-page";
+import {
+  assertSafeApiTransport,
+  renderAutoQuestionPrompt,
+  validateAutoQuestionEndpoint,
+  validateAutoQuestionFolder,
+} from "./auto-question";
 export { DEFAULT_SETTINGS } from "./config";
 
-const TABS = [["groups", "复习标签"], ["exercise", "习题页"], ["data", "数据与备份"], ["display", "显示"]] as const;
+const TABS = [["groups", "复习标签"], ["exercise", "习题页"], ["auto-question", "自动出题"], ["data", "数据与备份"], ["display", "显示"]] as const;
 type SettingsPage = typeof TABS[number][0];
 type DisplayDraft = Pick<ReviewCenterSettings, "showNoteHeatmap" | "showCardHeatmap" | "autoOpenDashboard">;
 type ExercisePageDraft = Pick<ReviewCenterSettings, "exercisePageFolder" | "exercisePageNameTemplate" | "exercisePageTags">;
+type AutoQuestionDraft = Omit<AutoQuestionSettings, "batchSize" | "masteryThreshold" | "maxQuestions" | "maxSourceCharacters"> & {
+  batchSize: string;
+  masteryPercent: string;
+  maxQuestions: string;
+  maxSourceCharacters: string;
+};
 
 export class ReviewCenterSettingTab extends PluginSettingTab {
   private page: SettingsPage = "groups";
   private cleaners: Array<() => void> = [];
   private folderDraft?: string;
   private exercisePageDraft?: ExercisePageDraft;
+  private autoQuestionDraft?: AutoQuestionDraft;
   private displayDraft?: DisplayDraft;
   private migrating = false;
   private repairMessage = "";
@@ -36,8 +49,8 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     return [{
-      name: "复习标签、习题页、数据与备份、显示",
-      aliases: ["笔记", "知识点", "标签", "习题", "文件名模板", "时间变量", "数据目录", "迁移", "备份", "修复知识库", "重建索引", "热力图", "启动", "review"],
+      name: "复习标签、习题页、自动出题、数据与备份、显示",
+      aliases: ["笔记", "知识点", "标签", "习题", "自动出题", "大模型", "API", "提示词", "题库", "掌握率", "文件名模板", "时间变量", "数据目录", "迁移", "备份", "修复知识库", "重建索引", "热力图", "启动", "review"],
       render: (setting) => {
         // Keep the compact tabs and explicit Save while using native search.
         setting.settingEl.empty(); setting.settingEl.removeClass("setting-item");
@@ -70,8 +83,97 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     const panel = root.createDiv({ cls: "review-settings-panel", attr: { role: "tabpanel", id: "review-settings-panel", "aria-labelledby": "review-settings-tab-" + this.page } });
     if (this.page === "groups") this.renderGroups(panel);
     else if (this.page === "exercise") this.renderExercisePage(panel);
+    else if (this.page === "auto-question") this.renderAutoQuestion(panel);
     else if (this.page === "data") this.renderData(panel);
     else this.renderDisplay(panel);
+  }
+
+  private renderAutoQuestion(root: HTMLElement): void {
+    this.autoQuestionDraft ??= this.currentAutoQuestion();
+    const draft = this.autoQuestionDraft;
+    root.createEl("p", { cls: "review-settings-intro", text: "从当前笔记取材，把问答卡写入指定题库。题库还有未作答卡片时等待；全部作答后，掌握率未达标才继续出题，达标或到上限即停止。" });
+    new Setting(root).setName("复习后自动评估").setDesc("默认关闭。开启后，只在最后一张未作答的自动题目完成评分时评估；仅在需要继续时发起一次 API 请求。")
+      .addToggle((toggle) => toggle.setValue(draft.enabled).onChange((value) => { draft.enabled = value; }));
+    new Setting(root).setName("API 协议").setDesc("新版结构化接口适合 OpenAI；兼容结构化接口适合常见网关。")
+      .addDropdown((dropdown) => dropdown
+        .addOption("responses", "OpenAI 新版接口")
+        .addOption("chat-completions", "OpenAI 兼容接口")
+        .setValue(draft.apiFormat)
+        .onChange((value) => {
+          const previous = draft.apiFormat;
+          draft.apiFormat = value === "chat-completions" ? "chat-completions" : "responses";
+          const defaults = {
+            responses: "https://api.openai.com/v1/responses",
+            "chat-completions": "https://api.openai.com/v1/chat/completions",
+          } as const;
+          if (draft.endpoint === defaults[previous]) draft.endpoint = defaults[draft.apiFormat];
+          this.update();
+        }));
+    new Setting(root).setName("API 地址").setDesc("请填完整请求地址。原文与题库表现会发送给该服务；其数据政策由对应提供商决定。")
+      .addText((text) => text.setPlaceholder("API 请求地址").setValue(draft.endpoint)
+        .onChange((value) => { draft.endpoint = value; }));
+    new Setting(root).setName("模型名称").setDesc("例如 GPT-5-mini，或兼容网关提供的模型 ID。")
+      .addText((text) => text.setPlaceholder("填写模型 ID").setValue(draft.model).onChange((value) => { draft.model = value; }));
+    new Setting(root).setName("API 密钥").setDesc("从 Obsidian SecretStorage 选择或新建。设置文件只保存密钥名称，不保存密钥值；无密钥的本地接口可留空。")
+      .addComponent((element) => new SecretComponent(this.app, element).setValue(draft.apiKeySecret)
+        .onChange((value) => { draft.apiKeySecret = value; }));
+    new Setting(root).setName("题库文件夹").setDesc("同一来源的自动题目追加到一篇 Markdown 题库；不覆盖人工修改。")
+      .addText((text) => {
+        text.setPlaceholder("自动题库").setValue(draft.outputFolder).onChange((value) => { draft.outputFolder = value; });
+        const suggest = folderInput(this.app, text.inputEl, (value) => { draft.outputFolder = value; text.setValue(value); });
+        this.cleaners.push(() => suggest.close());
+      });
+    const tagsRow = new Setting(root).setName("题库标签").setDesc("加到新题库，应至少命中一个“知识点复习标签”或其他识别条件。");
+    const tagsInput = new TagInput(this.app, tagsRow.controlEl, draft.tags, (tags) => { draft.tags = tags; }, "自动题库标签");
+    this.cleaners.push(() => tagsInput.destroy());
+    for (const [key, name, desc, placeholder] of [
+      ["batchSize", "每批出题数", "1–20 题。", "5"],
+      ["masteryPercent", "停止掌握率", "全部作答后，最新评分为“良好/简单”的卡片占比达到该百分比时停止。", "90"],
+      ["maxQuestions", "单个来源题目上限", "达到上限后不再请求 API。", "50"],
+      ["maxSourceCharacters", "原文字符上限", "超过时中止，不静默截断原文。", "30000"],
+    ] as const) {
+      new Setting(root).setName(name).setDesc(desc).addText((text) => {
+        text.inputEl.type = "number"; text.inputEl.inputMode = "numeric";
+        text.setPlaceholder(placeholder).setValue(draft[key]).onChange((value) => { draft[key] = value; });
+      });
+    }
+    new Setting(root).setName("自定义提示词").setDesc("支持 {{source_title}}、{{source_path}}、{{source_content}}、{{question_count}}、{{mastery_percent}}、{{weak_questions}}、{{existing_questions}}。输出 JSON 结构由插件另行约束。")
+      .addTextArea((area) => {
+        area.setValue(draft.prompt).onChange((value) => { draft.prompt = value; });
+        area.inputEl.rows = 16; area.inputEl.addClass("review-auto-question-prompt");
+      });
+    new Setting(root).setName("当前笔记").setDesc("手动执行一次“评估→等待/停止/继续出题”。即使自动评估关闭，此按钮仍可用。")
+      .addButton((button) => button.setButtonText("评估并继续").onClick(() => void this.host.runAutoQuestionGeneration()));
+    this.saveRow(root, "保存自动出题设置", "保存只写入非敏感配置；API 密钥值由 Obsidian SecretStorage 单独管理。", async () => {
+      const batchSize = integerField(draft.batchSize, 1, 20, "每批出题数");
+      const masteryPercent = integerField(draft.masteryPercent, 50, 100, "停止掌握率");
+      const maxQuestions = integerField(draft.maxQuestions, 1, 500, "题目上限");
+      const maxSourceCharacters = integerField(draft.maxSourceCharacters, 1_000, 200_000, "原文字符上限");
+      if (maxQuestions < batchSize) throw new Error("单个来源题目上限不能小于每批出题数。");
+      if (draft.enabled && !draft.model.trim()) throw new Error("开启自动评估前，请填写模型名称。");
+      const endpoint = validateAutoQuestionEndpoint(draft.endpoint);
+      assertSafeApiTransport(endpoint);
+      const outputFolder = validateAutoQuestionFolder(draft.outputFolder, this.host.settings.dataFolder);
+      renderAutoQuestionPrompt(draft.prompt, {
+        sourceTitle: "原文标题", sourcePath: "资料/原文.md", sourceContent: "原文内容",
+        questionCount: batchSize, masteryRate: 0.5, weakQuestions: [], existingQuestions: [],
+      });
+      await this.patch({ autoQuestion: {
+        enabled: draft.enabled,
+        apiFormat: draft.apiFormat,
+        endpoint,
+        model: draft.model.trim(),
+        apiKeySecret: draft.apiKeySecret.trim(),
+        prompt: draft.prompt,
+        outputFolder,
+        tags: tagsInput.values(),
+        batchSize,
+        masteryThreshold: masteryPercent / 100,
+        maxQuestions,
+        maxSourceCharacters,
+      } });
+      this.autoQuestionDraft = this.currentAutoQuestion();
+    }, () => { this.autoQuestionDraft = this.currentAutoQuestion(); });
   }
 
   private renderExercisePage(root: HTMLElement): void {
@@ -250,6 +352,17 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     const { exercisePageFolder, exercisePageNameTemplate, exercisePageTags } = this.host.settings;
     return { exercisePageFolder, exercisePageNameTemplate, exercisePageTags: [...exercisePageTags] };
   }
+  private currentAutoQuestion(): AutoQuestionDraft {
+    const value = this.host.settings.autoQuestion;
+    return {
+      ...value,
+      tags: [...value.tags],
+      batchSize: String(value.batchSize),
+      masteryPercent: String(Math.round(value.masteryThreshold * 100)),
+      maxQuestions: String(value.maxQuestions),
+      maxSourceCharacters: String(value.maxSourceCharacters),
+    };
+  }
   private saveRow(root: HTMLElement, title: string, description: string, save: () => Promise<void>, reset: () => void): void {
     const error = root.createDiv({ cls: "review-setting-error", attr: { role: "alert" } });
     const row = new Setting(root).setName(title).setDesc(description);
@@ -267,4 +380,12 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
   }
   private openManagement(): void { this.host.closePluginSettings(); void this.host.openManagement(); }
   private async patch(patch: Partial<ReviewCenterSettings>): Promise<void> { await this.host.updateSettings({ ...this.host.settings, ...patch }); }
+}
+
+function integerField(value: string, minimum: number, maximum: number, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`${name}须为 ${minimum}–${maximum} 之间的整数。`);
+  }
+  return parsed;
 }

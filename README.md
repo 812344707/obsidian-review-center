@@ -56,6 +56,8 @@
 
 开发环境、检查和打包命令见 [贡献指南](CONTRIBUTING.md)。本地优化模块无需 Rust 即可构建插件；重编模块见 [优化模块说明](optimizer/README.md)。
 
+自动出题模式正在开发分支验证，调研对象、采用边界、掌握度闸门和隐私设计见 [自动出题模式调研与实现边界](docs/auto-question-research-2026-09-20.md)；它尚未包含在上方 1.3.1 安装包中。
+
 反馈请使用 [GitHub Issues](https://github.com/812344707/obsidian-review-center/issues)，提供设备、Obsidian／插件版本、复现步骤和不含隐私的最小示例。
 
 历次变化见 [更新记录](CHANGELOG.md)。1.3.1 的 [发布说明](docs/release-notes-1.3.1.md)、[升级说明](docs/1.3.1-upgrade.md) 与 [验证记录](docs/1.3.1-validation.md) 说明变化、升级步骤及验证范围。

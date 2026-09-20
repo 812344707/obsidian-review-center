@@ -155,6 +155,25 @@ export interface ReviewGroup {
   parameters: ReviewParameters;
 }
 
+export type AutoQuestionApiFormat = "responses" | "chat-completions";
+
+export interface AutoQuestionSettings {
+  /** When enabled, rating the last unanswered generated card evaluates the bank. */
+  enabled: boolean;
+  apiFormat: AutoQuestionApiFormat;
+  endpoint: string;
+  model: string;
+  /** Name of an Obsidian SecretStorage entry; the secret value is never saved here. */
+  apiKeySecret: string;
+  prompt: string;
+  outputFolder: string;
+  tags: string[];
+  batchSize: number;
+  masteryThreshold: number;
+  maxQuestions: number;
+  maxSourceCharacters: number;
+}
+
 export interface ReviewCenterSettings {
   /** Marks the one-time migration of the legacy note interval default. */
   noteDaySchedulingVersion?: 1;
@@ -169,6 +188,7 @@ export interface ReviewCenterSettings {
   exercisePageFolder: string;
   exercisePageNameTemplate: string;
   exercisePageTags: string[];
+  autoQuestion: AutoQuestionSettings;
   autoOpenDashboard: boolean;
   presets?: ReviewPreset[];
 }

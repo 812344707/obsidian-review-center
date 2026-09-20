@@ -8,7 +8,7 @@ export default defineConfig([
     files: ["src/**/*.ts"],
     languageOptions: { parserOptions: { projectService: true } },
     rules: {
-      "obsidianmd/ui/sentence-case": ["warn", { acronyms: ["FSRS", "JSON", "CSV", "YAML", "CSS", "HTML", "PDF", "WASM", "ID", "API", "URL"] }],
+      "obsidianmd/ui/sentence-case": ["warn", { acronyms: ["FSRS", "JSON", "CSV", "YAML", "CSS", "HTML", "PDF", "WASM", "ID", "API", "URL", "OpenAI", "GPT"] }],
     },
   },
 ]);

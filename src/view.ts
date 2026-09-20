@@ -365,9 +365,11 @@ export class ReviewCenterView extends ItemView {
         if (this.plugin.service.maintenance) { new Notice("正在迁移或批量处理，请稍候。"); return; }
         void (async () => {
           for (const sibling of Array.from(row.querySelectorAll("button"))) sibling.disabled = true;
-          try { await this.plugin.service.gradeCurrent(grade); }
+          let reviewed = false;
+          try { await this.plugin.service.gradeCurrent(grade); reviewed = true; }
           catch (error) { new Notice(error instanceof Error ? error.message : String(error)); }
           await this.render();
+          if (reviewed) this.plugin.handleAutoQuestionReview(entry.sourcePath);
         })();
       });
     }

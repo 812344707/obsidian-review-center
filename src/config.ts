@@ -7,6 +7,13 @@ import {
   renderExercisePageName,
   validateExercisePageFolder,
 } from "./exercise-page";
+import {
+  DEFAULT_AUTO_QUESTION_SETTINGS,
+  assertSafeApiTransport,
+  renderAutoQuestionPrompt,
+  validateAutoQuestionEndpoint,
+  validateAutoQuestionFolder,
+} from "./auto-question";
 
 export function defaultParameters(mode: ReviewMode): ReviewParameters {
   return {
@@ -179,6 +186,47 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     exercisePageTags = parseTags(Array.isArray(data.exercisePageTags)
       ? data.exercisePageTags.filter((tag) => typeof tag === "string").join("\n") : "");
   } catch { /* Invalid stored tags fall back to no extra tags. */ }
+  const auto = object(data.autoQuestion);
+  let autoTags = [...DEFAULT_AUTO_QUESTION_SETTINGS.tags];
+  try {
+    autoTags = parseTags(Array.isArray(auto.tags)
+      ? auto.tags.filter((tag) => typeof tag === "string").join("\n") : DEFAULT_AUTO_QUESTION_SETTINGS.tags.join("\n"));
+  } catch { /* Invalid stored tags fall back to the safe default scope. */ }
+  let autoEndpoint = DEFAULT_AUTO_QUESTION_SETTINGS.endpoint;
+  try {
+    const candidate = validateAutoQuestionEndpoint(typeof auto.endpoint === "string" ? auto.endpoint : autoEndpoint);
+    assertSafeApiTransport(candidate);
+    autoEndpoint = candidate;
+  }
+  catch { /* Invalid stored endpoints never become a request target. */ }
+  let autoFolder = DEFAULT_AUTO_QUESTION_SETTINGS.outputFolder;
+  for (const candidate of [typeof auto.outputFolder === "string" ? auto.outputFolder : "", DEFAULT_AUTO_QUESTION_SETTINGS.outputFolder, "自动复习题库"]) {
+    try { autoFolder = validateAutoQuestionFolder(candidate, dataFolder); break; }
+    catch { /* Try the next safe folder. */ }
+  }
+  let autoPrompt = DEFAULT_AUTO_QUESTION_SETTINGS.prompt;
+  try {
+    const candidate = typeof auto.prompt === "string" && auto.prompt.trim() ? auto.prompt : autoPrompt;
+    renderAutoQuestionPrompt(candidate, {
+      sourceTitle: "原文", sourcePath: "资料/原文.md", sourceContent: "内容", questionCount: 1,
+      masteryRate: 0, weakQuestions: [], existingQuestions: [],
+    });
+    autoPrompt = candidate;
+  } catch { /* Invalid stored prompt variables fall back without sending data. */ }
+  const autoQuestion = {
+    enabled: auto.enabled === true,
+    apiFormat: auto.apiFormat === "chat-completions" ? "chat-completions" as const : "responses" as const,
+    endpoint: autoEndpoint,
+    model: typeof auto.model === "string" ? auto.model.trim() : DEFAULT_AUTO_QUESTION_SETTINGS.model,
+    apiKeySecret: typeof auto.apiKeySecret === "string" ? auto.apiKeySecret.trim() : "",
+    prompt: autoPrompt,
+    outputFolder: autoFolder,
+    tags: autoTags,
+    batchSize: number(auto.batchSize, DEFAULT_AUTO_QUESTION_SETTINGS.batchSize, 1, 20),
+    masteryThreshold: number(auto.masteryThreshold, DEFAULT_AUTO_QUESTION_SETTINGS.masteryThreshold, 0.5, 1, false),
+    maxQuestions: number(auto.maxQuestions, DEFAULT_AUTO_QUESTION_SETTINGS.maxQuestions, 1, 500),
+    maxSourceCharacters: number(auto.maxSourceCharacters, DEFAULT_AUTO_QUESTION_SETTINGS.maxSourceCharacters, 1_000, 200_000),
+  };
   return {
     noteDaySchedulingVersion: 1,
     noteGroups, cardGroups, presets,
@@ -192,6 +240,7 @@ export function normalizeSettings(value: unknown): ReviewCenterSettings {
     exercisePageFolder: exercisePageFolder || "渐进式复习习题",
     exercisePageNameTemplate,
     exercisePageTags,
+    autoQuestion,
     autoOpenDashboard: data.autoOpenDashboard === true,
   };
 }

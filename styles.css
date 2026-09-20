@@ -757,6 +757,7 @@ button.review-grade:hover { background: var(--grade-color); filter: brightness(1
 .review-settings-panel { padding-top:10px; }
 .review-settings-panel .setting-item-control { flex-wrap:wrap; gap:8px; }
 .review-settings-panel .setting-item-control input,.review-settings-panel .setting-item-control select { max-width:100%; }
+.review-auto-question-prompt { width:min(720px, 100%); min-height:260px; resize:vertical; }
 .review-settings-tabs button:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
 @media (max-width:700px) {
  .review-home-actions { margin-left:auto; }

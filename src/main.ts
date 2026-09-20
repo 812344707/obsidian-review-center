@@ -29,8 +29,8 @@ import type {
   ReviewScope,
   UndoEntry,
 } from "./types";
-import { createId, pathIsInside, cloneValue } from "./utils";
-import { normalizeSettings, validateDataFolder, groupsFor } from "./config";
+import { createId, pathIsInside, cloneValue, hashText } from "./utils";
+import { normalizeSettings, validateDataFolder, groupsFor, resolveGroup } from "./config";
 import { copyDataDirectory } from "./data-migration";
 import { BulkTagsModal } from "./bulk-tags-modal";
 import { applyBulkTags, type BulkTagPreview, type BulkTagRequest, type BulkTagResult } from "./tags";
@@ -50,6 +50,16 @@ import {
   renderExercisePageName,
   validateExercisePageFolder,
 } from "./exercise-page";
+import {
+  analyzeAutoQuestionBank,
+  appendAutoQuestionBatch,
+  autoQuestionBankMarkdown,
+  decideAutoQuestionAction,
+  isAutoQuestionFrontmatter,
+  renderAutoQuestionPrompt,
+  validateAutoQuestionFolder,
+} from "./auto-question";
+import { requestAutoQuestions } from "./auto-question-api";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -75,6 +85,8 @@ export default class ReviewCenterPlugin extends Plugin {
   private checkedExercisePages = new Set<string>();
   private activeExercisePagePath: string | null = null;
   private exercisePageQueue: Promise<void> = Promise.resolve();
+  private autoQuestionPromise: Promise<void> | null = null;
+  private autoQuestionMetadataWaiters = new Map<string, Set<(markdown: string | null) => void>>();
   private loadPromise: Promise<void> | null = null;
   private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
@@ -122,6 +134,10 @@ export default class ReviewCenterPlugin extends Plugin {
 
   onunload(): void {
     this.unloaded = true;
+    for (const waiters of this.autoQuestionMetadataWaiters.values()) {
+      for (const finish of [...waiters]) finish(null);
+    }
+    this.autoQuestionMetadataWaiters.clear();
     for (const timer of this.deferredTimers) window.clearTimeout(timer);
     this.deferredTimers.clear();
     for (const timer of this.authoringTimers.values()) window.clearTimeout(timer);
@@ -360,6 +376,206 @@ export default class ReviewCenterPlugin extends Plugin {
     const task = this.exercisePageQueue.then(() => this.performCreateExercisePage(source, sourceEditor, sourceCursor));
     this.exercisePageQueue = task.catch(() => undefined);
     try { await task; } catch (error) { new Notice(errorMessage(error), 10000); }
+  }
+
+  async runAutoQuestionGeneration(): Promise<void> {
+    const file = this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
+    if (!file) { new Notice("请先打开原文或已有的自动题库。"); return; }
+    await this.runAutoQuestionForFile(file, true);
+  }
+
+  handleAutoQuestionReview(path: string): void {
+    if (!this.settings.autoQuestion.enabled || this.unloaded) return;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return;
+    const cache = this.app.metadataCache.getFileCache(file);
+    if (!isAutoQuestionFrontmatter(cache?.frontmatter)) return;
+    void this.runAutoQuestionForFile(file, false);
+  }
+
+  private async runAutoQuestionForFile(file: TFile, manual: boolean): Promise<void> {
+    if (this.autoQuestionPromise) {
+      if (manual) new Notice("已有自动出题任务正在运行，请稍候。");
+      return this.autoQuestionPromise;
+    }
+    const task = this.performAutoQuestion(file, manual).catch((error: unknown) => {
+      console.error("[渐进式复习] 自动出题失败", error);
+      new Notice(`自动出题未完成：${errorMessage(error)}`, 12000);
+    }).finally(() => { this.autoQuestionPromise = null; });
+    this.autoQuestionPromise = task;
+    return task;
+  }
+
+  private async performAutoQuestion(selected: TFile, manual: boolean): Promise<void> {
+    if (this.service.maintenance || this.refreshPromise) throw new Error("正在整理或迁移数据，请完成后再自动出题。");
+    await this.ensureLoaded();
+    const autoSettings = cloneValue(this.settings.autoQuestion);
+    const settingsSnapshot = JSON.stringify({
+      autoQuestion: autoSettings,
+      dataFolder: this.settings.dataFolder,
+      cardGroups: this.settings.cardGroups,
+    });
+    const selectedCache = this.app.metadataCache.getFileCache(selected);
+    if (!selectedCache) throw new Error("当前笔记索引尚未就绪，请稍后重试。");
+    const selectedFrontmatter = selectedCache.frontmatter;
+    const sourcePath = isAutoQuestionFrontmatter(selectedFrontmatter)
+      ? typeof selectedFrontmatter?.auto_question_source === "string" ? selectedFrontmatter.auto_question_source : ""
+      : selected.path;
+    const source = this.app.vault.getAbstractFileByPath(sourcePath);
+    if (!(source instanceof TFile) || source.extension.toLowerCase() !== "md") {
+      throw new Error("自动题库记录的原文不存在，请恢复原文或修正 auto_question_source。");
+    }
+    if (pathIsInside(source.path, this.settings.dataFolder)) throw new Error("复习数据目录中的文件不能作为出题原文。");
+
+    const folder = validateAutoQuestionFolder(autoSettings.outputFolder, this.settings.dataFolder);
+    const banks = this.findAutoQuestionBanks(source.path);
+    if (banks.length > 1) throw new Error(`发现 ${banks.length} 篇同源自动题库，请合并或移走重复题库后再继续。`);
+    let bank = banks[0] ?? null;
+    if (bank && !pathIsInside(bank.path, folder)) {
+      throw new Error(`已有题库位于“${bank.path}”，与当前题库文件夹“${folder}”不一致；请先移动题库或改回设置。`);
+    }
+
+    const sourceCache = this.app.metadataCache.getFileCache(source);
+    if (!sourceCache) throw new Error("原文索引尚未就绪，请稍后重试。");
+    const sourceTitle = source.basename || source.path.split("/").at(-1)?.replace(/\.md$/i, "") || "未命名";
+    const filename = renderExercisePageName("{{title}}-自动题库", sourceTitle);
+    const bankPath = bank?.path ?? exercisePagePath(folder, filename, (candidate) => this.app.vault.getAbstractFileByPath(candidate) !== null);
+    const tags = bank
+      ? getAllTags(this.app.metadataCache.getFileCache(bank) ?? {}) ?? []
+      : [...(getAllTags(sourceCache) ?? []), ...autoSettings.tags];
+    if (!resolveGroup(tags, this.settings.cardGroups, bankPath)) {
+      throw new Error("自动题库不会命中任何“知识点复习”识别条件。请给题库设置合适标签，或把题库文件夹加入知识点复习范围。");
+    }
+
+    let bankRecords = bank ? this.service.records.filter((record) => record.sourcePath === bank.path) : [];
+    if (bank && bankRecords.length === 0) {
+      if (!manual) return;
+      if (!await this.refreshData(false)) throw new Error("题库尚未加入复习清单，请稍后再次尝试。");
+      bankRecords = this.service.records.filter((record) => record.sourcePath === bank.path);
+      if (!bankRecords.length) throw new Error("题库未进入复习清单，请核对知识点复习识别条件并整理数据。");
+    }
+    const stats = analyzeAutoQuestionBank(bankRecords, this.service.history);
+    const decision = decideAutoQuestionAction(stats, autoSettings);
+    if (decision.kind !== "generate") {
+      if (manual) new Notice(autoQuestionDecisionMessage(decision, stats));
+      return;
+    }
+
+    const sourceMarkdown = await this.app.vault.cachedRead(source);
+    if (sourceMarkdown.length > autoSettings.maxSourceCharacters) {
+      throw new Error(`原文共有 ${sourceMarkdown.length} 个字符，超过设置的 ${autoSettings.maxSourceCharacters} 个字符上限；插件没有截断或发送原文。`);
+    }
+    const bankMarkdown = bank ? await this.app.vault.cachedRead(bank) : "";
+    const secretName = autoSettings.apiKeySecret.trim();
+    const apiKey = secretName ? this.app.secretStorage.getSecret(secretName) : null;
+    if (secretName && !apiKey) throw new Error(`未能从 SecretStorage 读取“${secretName}”，请在设置中重新选择 API 密钥。`);
+    const prompt = renderAutoQuestionPrompt(autoSettings.prompt, {
+      sourceTitle,
+      sourcePath: source.path,
+      sourceContent: sourceMarkdown,
+      questionCount: decision.count,
+      masteryRate: stats.masteryRate,
+      weakQuestions: stats.weakQuestions,
+      existingQuestions: stats.existingQuestions,
+    });
+    if (manual) new Notice(`正在生成 ${decision.count} 道题；写入前会再次核对原文和题库。`);
+    const questions = await requestAutoQuestions(
+      autoSettings,
+      apiKey,
+      prompt,
+      decision.count,
+      stats.existingQuestions,
+    );
+    if (this.unloaded) return;
+
+    if (await this.app.vault.cachedRead(source) !== sourceMarkdown) {
+      throw new Error("API 请求期间原文发生变化，本次结果已丢弃，请重新评估。");
+    }
+    if (JSON.stringify({
+      autoQuestion: this.settings.autoQuestion,
+      dataFolder: this.settings.dataFolder,
+      cardGroups: this.settings.cardGroups,
+    }) !== settingsSnapshot) {
+      throw new Error("API 请求期间自动出题设置发生变化，本次结果已丢弃，请重新评估。");
+    }
+    if (bank) {
+      const currentBank = await this.app.vault.cachedRead(bank);
+      if (currentBank !== bankMarkdown) throw new Error("API 请求期间题库或评分发生变化，本次结果已丢弃，请重新评估。");
+      const latestStats = analyzeAutoQuestionBank(
+        this.service.records.filter((record) => record.sourcePath === bank.path),
+        this.service.history,
+      );
+      const latestDecision = decideAutoQuestionAction(latestStats, autoSettings);
+      if (latestStats.fingerprint !== stats.fingerprint || latestDecision.kind !== "generate") {
+        throw new Error("API 请求期间题库状态发生变化，本次结果已丢弃，请重新评估。");
+      }
+    }
+
+    const materialsWereDirty = this.materialsDirty;
+    let nextBankMarkdown: string;
+    if (bank) {
+      const batchNumber = (bankMarkdown.match(/^## 批次\s+/gm)?.length ?? 0) + 1;
+      nextBankMarkdown = appendAutoQuestionBatch(bankMarkdown, questions, batchNumber);
+      const metadataReady = this.waitForAutoQuestionMetadata(bankPath, nextBankMarkdown);
+      await this.app.vault.process(bank, (current) => {
+        if (current !== bankMarkdown) throw new Error("写入前题库发生变化，本次结果已丢弃。");
+        return nextBankMarkdown;
+      });
+      const indexed = await metadataReady;
+      if (this.unloaded) return;
+      if (!indexed) throw new Error("题库已经写入，但 Obsidian 索引未及时更新；请稍后点击“整理数据”。");
+    } else {
+      await this.ensureExercisePageFolder(folder);
+      const sourceLink = this.app.fileManager.generateMarkdownLink(source, bankPath);
+      nextBankMarkdown = autoQuestionBankMarkdown({
+        sourcePath: source.path,
+        sourceLink,
+        sourceTitle,
+        tags,
+        questions,
+      });
+      const metadataReady = this.waitForAutoQuestionMetadata(bankPath, nextBankMarkdown);
+      bank = await this.app.vault.create(bankPath, nextBankMarkdown);
+      const indexed = await metadataReady;
+      if (this.unloaded) return;
+      if (!indexed) throw new Error("题库已经写入，但 Obsidian 索引未及时更新；请稍后点击“整理数据”。");
+    }
+    if (bankRecords.length) {
+      await this.service.refreshSource(bank.path);
+      this.materialsDirty = materialsWereDirty;
+    }
+    else if (!await this.refreshData(false)) throw new Error("题库已写入，但索引尚未就绪；请稍后点击“整理数据”。");
+    this.updatePreparationState();
+    await this.renderOpenViews();
+    new Notice(`已写入 ${questions.length} 道题：${bank.path}`);
+    if (manual) {
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(bank, { active: true });
+      await this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
+  private findAutoQuestionBanks(sourcePath: string): TFile[] {
+    return this.app.vault.getMarkdownFiles().filter((file) =>
+      isAutoQuestionFrontmatter(this.app.metadataCache.getFileCache(file)?.frontmatter, sourcePath));
+  }
+
+  private waitForAutoQuestionMetadata(path: string, expectedMarkdown: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const expectedHash = hashText(expectedMarkdown);
+      const finish = (markdown: string | null) => {
+        if (markdown !== null && hashText(markdown) !== expectedHash) return;
+        window.clearTimeout(timer);
+        const waiters = this.autoQuestionMetadataWaiters.get(path);
+        waiters?.delete(finish);
+        if (!waiters?.size) this.autoQuestionMetadataWaiters.delete(path);
+        resolve(markdown !== null);
+      };
+      const timer = window.setTimeout(() => finish(null), 10_000);
+      const waiters = this.autoQuestionMetadataWaiters.get(path) ?? new Set<(markdown: string | null) => void>();
+      waiters.add(finish);
+      this.autoQuestionMetadataWaiters.set(path, waiters);
+    });
   }
 
   private async performCreateExercisePage(source: TFile, sourceEditor: Editor, sourceCursor: EditorPosition): Promise<void> {
@@ -721,6 +937,15 @@ export default class ReviewCenterPlugin extends Plugin {
     this.addCommand({ id: "bulk-add-review-tags", name: "批量添加标签", callback: () => new BulkTagsModal(this.app, this).open() });
     this.addCommand({ id: "open-plugin-settings", name: "打开插件设置", callback: () => this.openPluginSettings() });
     this.addCommand({ id: "create-exercise-page", name: "新建习题页", callback: () => void this.createExercisePage() });
+    this.addCommand({
+      id: "evaluate-auto-questions",
+      name: "自动出题：评估并继续",
+      checkCallback: (checking) => {
+        const available = !!this.app.workspace.getActiveViewOfType(MarkdownView)?.file;
+        if (!checking && available) void this.runAutoQuestionGeneration();
+        return available;
+      },
+    });
     for (const [id, name, action] of [
       ["insert-review-callout", "插入复习折叠块", "review"],
       ["insert-review-qa", "插入简写问答卡", "qa"],
@@ -960,6 +1185,8 @@ export default class ReviewCenterPlugin extends Plugin {
       this.updateExercisePageMarker(file.path, markdown);
       this.service.metadataReady(file.path, markdown);
       this.scheduleAuthoredSource(file.path, markdown);
+      const waiters = this.autoQuestionMetadataWaiters.get(file.path);
+      if (waiters) for (const finish of [...waiters]) finish(markdown);
     }));
   }
 
@@ -1143,6 +1370,19 @@ export default class ReviewCenterPlugin extends Plugin {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function autoQuestionDecisionMessage(
+  decision: ReturnType<typeof decideAutoQuestionAction>,
+  stats: ReturnType<typeof analyzeAutoQuestionBank>,
+): string {
+  if (decision.kind === "stop" && decision.reason === "mastered") {
+    return `已停止出题：当前掌握率 ${Math.round(stats.masteryRate * 100)}%，已达到阈值。`;
+  }
+  if (decision.kind === "stop") return `已停止出题：题库已有 ${stats.totalQuestions} 道题，达到题量上限。`;
+  if (decision.reason === "pending-change") return `暂不出题：有 ${stats.pendingChanges} 道题内容变更尚未确认。`;
+  if (decision.reason === "unanswered") return `暂不出题：还有 ${stats.activeQuestions - stats.answeredQuestions} 道题尚未作答。`;
+  return "暂不出题：题库当前没有可用于评估的有效题目。";
 }
 
 class CardTemplateModal extends Modal {
