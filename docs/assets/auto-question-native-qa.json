@@ -1,0 +1,54 @@
+{
+  "date": "2026-09-20",
+  "environment": {
+    "platform": "macOS",
+    "obsidian": "1.13.7",
+    "vault": "isolated temporary vault",
+    "api": "127.0.0.1 simulated Responses API"
+  },
+  "build_commit": "b2641b89a07808ca39d256bcc9422c4cf201ec83",
+  "requests": [
+    {
+      "number": 1,
+      "method": "POST",
+      "authorization_present": true,
+      "model": "qa-model",
+      "store": false,
+      "source_present": true,
+      "result": "initial two-question batch"
+    },
+    {
+      "number": 2,
+      "method": "POST",
+      "authorization_present": true,
+      "model": "qa-model",
+      "store": false,
+      "source_present": true,
+      "result": "remedial two-question batch after 50 percent mastery"
+    }
+  ],
+  "final_state": {
+    "batches": 2,
+    "cards": 4,
+    "ratings": [2, 3, 3, 3],
+    "mastery_threshold": 0.75,
+    "request_count_after_stop": 2,
+    "persisted_after_plugin_reload": true,
+    "persisted_after_app_restart": true,
+    "secret_value_in_plugin_data": false,
+    "page_errors": [],
+    "unhandled_rejections": []
+  },
+  "visual": {
+    "desktop_light": "images/auto-question-settings-desktop-light.png",
+    "narrow_dark": "images/auto-question-settings-narrow-dark.png",
+    "narrow_viewport_width": 600,
+    "horizontal_control_overflow": false
+  },
+  "not_tested": [
+    "real external model provider",
+    "physical iOS or Android device",
+    "Windows or Linux",
+    "cross-device synchronization"
+  ]
+}
