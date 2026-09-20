@@ -1,0 +1,11 @@
+{
+  "version": "1.4.0",
+  "manifestAndLockAligned": true,
+  "runtimeUsesWebApis": true,
+  "documentationLinksChecked": 58,
+  "zipName": "review-center-1.4.0.zip",
+  "zipFilesChecked": 6,
+  "bytes": 415219,
+  "sha256": "099425339b16c079dd817e2c57446e0f01bc4dfea2eb3fd96207c16d47d81798",
+  "checksumsVerified": true
+}
