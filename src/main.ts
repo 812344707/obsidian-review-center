@@ -25,7 +25,6 @@ import type {
   ReviewCenterSettings,
   ReviewMode,
   ReviewSession,
-  StoredPluginData,
   ReviewScope,
   UndoEntry,
 } from "./types";
@@ -60,6 +59,13 @@ import {
   validateAutoQuestionFolder,
 } from "./auto-question";
 import { requestAutoQuestions } from "./auto-question-api";
+import {
+  chooseStoredSettings,
+  createSettingsSnapshot,
+  readSettingsMirror,
+  writeSettingsMirror,
+  type SettingsSnapshot,
+} from "./settings-storage";
 
 export default class ReviewCenterPlugin extends Plugin {
   settings: ReviewCenterSettings = { ...DEFAULT_SETTINGS };
@@ -91,7 +97,7 @@ export default class ReviewCenterPlugin extends Plugin {
   private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
   private migrationPromise: Promise<void> | null = null;
-  private dataFolderSaveChain: Promise<void> = Promise.resolve();
+  private settingsSaveChain: Promise<void> = Promise.resolve();
   private tickBusy = false;
   private schemaUpgrade = false;
   private tickSignature = "";
@@ -182,8 +188,7 @@ export default class ReviewCenterPlugin extends Plugin {
   }
   async persistSettingsInMaintenance(next: ReviewCenterSettings): Promise<void> {
     if (!this.service.maintenance) throw new Error("保存批量设置需要先暂停写入。");
-    const normalized = normalizeSettings(next);
-    await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
+    const normalized = await this.persistSettingsSnapshot(next);
     this.settings = normalized;
     this.service.settingsChanged();
   }
@@ -201,9 +206,8 @@ export default class ReviewCenterPlugin extends Plugin {
   async updateSettings(next: ReviewCenterSettings): Promise<void> {
     await this.ensureMigrated();
     if (next.dataFolder !== this.settings.dataFolder) throw new Error("请使用“应用并迁移”更换数据目录。");
-    const normalized = normalizeSettings(next);
     await this.service.runMaintenance(async () => {
-      await this.saveData({ schemaVersion: 4, settings: normalized } satisfies StoredPluginData);
+      const normalized = await this.persistSettingsSnapshot(next);
       this.settings = normalized;
       this.service.settingsChanged();
     });
@@ -226,8 +230,7 @@ export default class ReviewCenterPlugin extends Plugin {
       const migration = await copyDataDirectory(this.app.vault.adapter, this.settings.dataFolder, target);
       const next = { ...this.settings, dataFolder: migration.target };
       // Save before switching the store's live path. Failure leaves the old path active.
-      await this.saveData({ schemaVersion: 4, settings: next } satisfies StoredPluginData);
-      this.settings = next;
+      this.settings = await this.persistSettingsSnapshot(next);
       try { await migration.complete(); } catch (error) { console.warn("[渐进式复习] 目录已切换，完成标记待重试", error); }
     });
     await this.refreshData();
@@ -1265,10 +1268,8 @@ export default class ReviewCenterPlugin extends Plugin {
     this.settings = { ...this.settings, dataFolder: relocated };
     this.service.settingsChanged();
     this.settingsTab?.syncDataFolder(relocated);
-    const snapshot = this.settings;
-    this.dataFolderSaveChain = this.dataFolderSaveChain
-      .catch(() => undefined)
-      .then(() => this.saveData({ schemaVersion: 4, settings: snapshot } satisfies StoredPluginData))
+    const snapshot = cloneValue(this.settings);
+    void this.persistSettingsSnapshot(snapshot)
       .catch((error: unknown) => {
         console.error("[渐进式复习] 数据目录新位置保存失败", error);
         new Notice(`数据目录已移动到“${relocated}”，但新位置保存失败，请重新打开插件设置后保存：${errorMessage(error)}`, 12000);
@@ -1283,12 +1284,43 @@ export default class ReviewCenterPlugin extends Plugin {
     }
   }
 
+  private persistSettingsSnapshot(next: ReviewCenterSettings): Promise<ReviewCenterSettings> {
+    const normalized = cloneValue(normalizeSettings(next));
+    const operation = this.settingsSaveChain
+      .catch(() => undefined)
+      .then(async () => {
+        const snapshot = createSettingsSnapshot(normalized);
+        // The vault copy survives plugin-folder replacement. Write it first so
+        // a failed plugin save can still be recovered on the next load.
+        await writeSettingsMirror(this.app.vault.adapter, snapshot);
+        await this.saveData(snapshot);
+      });
+    this.settingsSaveChain = operation;
+    return operation.then(() => normalized);
+  }
+
   private async loadSettings(): Promise<void> {
-    const stored = await this.loadData() as { schemaVersion?: number; settings?: ReviewCenterSettings } | null;
-    this.originalSettings = stored?.settings;
-    this.settings = normalizeSettings(stored?.settings);
-    this.schemaUpgrade = stored?.schemaVersion !== 4;
-    if (stored?.settings && ![2, 3, 4].includes(stored.schemaVersion ?? 0)) this.legacySettings = stored.settings;
+    let primary: unknown = null, primaryError: unknown = null;
+    let mirror: SettingsSnapshot | null = null, mirrorError: unknown = null;
+    try { primary = await this.loadData(); } catch (error) { primaryError = error; }
+    try { mirror = await readSettingsMirror(this.app.vault.adapter); } catch (error) { mirrorError = error; }
+    const choice = chooseStoredSettings(primary, mirror);
+    if (!choice.data && (primaryError || mirrorError || choice.invalidPrimary)) {
+      throw new Error(`设置主文件和镜像均不可用，已停止加载以免覆盖原设置：${errorMessage(primaryError ?? mirrorError ?? "主设置格式无效")}`);
+    }
+    if (primaryError || mirrorError) {
+      console.warn("[渐进式复习] 一份设置副本不可用，已使用另一份恢复", primaryError ?? mirrorError);
+      new Notice("渐进式复习检测到一份设置副本损坏，已使用另一份恢复并重新保存。", 10000);
+    } else if (choice.source === "mirror") {
+      new Notice("渐进式复习已从知识库设置备份恢复原有设置。", 8000);
+    }
+    this.originalSettings = choice.data?.settings;
+    this.settings = normalizeSettings(choice.data?.settings);
+    this.schemaUpgrade = Boolean(choice.data && choice.data.schemaVersion !== 4);
+    if (choice.data?.settings && ![2, 3, 4].includes(choice.data.schemaVersion ?? 0)) this.legacySettings = choice.data.settings;
+    if (!choice.data || (choice.synchronize && choice.data.schemaVersion === 4)) {
+      this.settings = await this.persistSettingsSnapshot(this.settings);
+    }
   }
 
   private async ensureMigrated(): Promise<void> {
@@ -1296,7 +1328,7 @@ export default class ReviewCenterPlugin extends Plugin {
       if (this.schemaUpgrade) {
         await this.store.initialize();
         if (this.originalSettings) await this.store.writeBackup({ schemaVersion: 3, exportedAt: new Date().toISOString(), pluginVersion: "0.3.0", settings: this.originalSettings, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory() }, "pre-options-migration");
-        await this.saveData({ schemaVersion: 4, settings: this.settings } satisfies StoredPluginData);
+        this.settings = await this.persistSettingsSnapshot(this.settings);
         this.schemaUpgrade = false;
       }
       return;
@@ -1308,7 +1340,7 @@ export default class ReviewCenterPlugin extends Plugin {
         schemaVersion: 1, exportedAt: new Date().toISOString(), pluginVersion: "0.1.0",
         settings: this.legacySettings!, records: await this.store.loadAllRecords(), history: await this.store.loadAllHistory(),
       }, "pre-tags-migration");
-      await this.saveData({ schemaVersion: 4, settings: this.settings } satisfies StoredPluginData);
+      this.settings = await this.persistSettingsSnapshot(this.settings);
       this.legacySettings = null;
       this.schemaUpgrade = false;
       this.service.finishSession();

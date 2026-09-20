@@ -1,5 +1,13 @@
 # 更新记录
 
+## 1.4.1 · 更新保留设置（2026-09-20）
+
+- 插件设置除原 `data.json` 外，新增知识库 `.review-center/settings.json` 稳定镜像；更新器重建、丢失或回滚插件设置时，启动会恢复较新的有效副本。
+- 数据目录、复习标签、参数、显示、习题页和自动出题配置统一通过同一保存入口写入两份副本并回读核对；API 密钥值仍只保存在 Obsidian SecretStorage。
+- 设置副本带独立修订号和更新时间；两份内容一致时不重复改写，检测到一份损坏时使用另一份恢复，不会静默用默认值覆盖原设置。
+
+[下载与发布说明](https://github.com/812344707/obsidian-review-center/releases/tag/1.4.1) · [升级说明](docs/1.4.1-upgrade.md) · [验证记录](docs/1.4.1-validation.md)。
+
 ## 1.4.0 · 自动出题模式（2026-09-20）
 
 - 可在设置中连接 OpenAI Responses 或兼容 Chat Completions 的结构化输出 API，自定义模型、提示词、题库文件夹、标签和每批题量。

@@ -196,6 +196,10 @@ export interface ReviewCenterSettings {
 export interface StoredPluginData {
   schemaVersion: 4;
   settings: ReviewCenterSettings;
+  /** Identifies one exact settings save across the plugin file and vault mirror. */
+  settingsRevision?: string;
+  /** ISO timestamp used only to resolve divergent, valid settings snapshots. */
+  settingsUpdatedAt?: string;
 }
 
 export interface ParsedCardDraft {

@@ -23,6 +23,7 @@ import type { ReviewStore } from "../src/storage";
 import { fixtureRecord, fixtureSettings } from "./fixtures";
 import type { SourceRecord } from "../src/types";
 import type { ProgressReporter } from "../src/preparation";
+import { SETTINGS_MIRROR_PATH, createSettingsSnapshot } from "../src/settings-storage";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -33,9 +34,20 @@ function deferred<T>() {
 function harness() {
   const vaultEvents = new Map<string, (...args: any[]) => void>();
   const metadataEvents = new Map<string, (...args: any[]) => void>();
+  const files = new Map<string, string>();
+  const folders = new Set<string>();
   const app = {
     workspace: { getLeavesOfType: () => [] },
-    vault: { on: (name: string, fn: (...args: any[]) => void) => vaultEvents.set(name, fn) },
+    vault: {
+      on: (name: string, fn: (...args: any[]) => void) => vaultEvents.set(name, fn),
+      adapter: {
+        exists: async (path: string) => files.has(path) || folders.has(path),
+        stat: async (path: string) => files.has(path) ? { type: "file" } : folders.has(path) ? { type: "folder" } : null,
+        mkdir: async (path: string) => { folders.add(path); },
+        read: async (path: string) => files.get(path) ?? "",
+        write: async (path: string, data: string) => { files.set(path, data); },
+      },
+    },
     metadataCache: { on: (name: string, fn: (...args: any[]) => void) => metadataEvents.set(name, fn) },
   };
   const plugin = new ReviewCenterPlugin(app as unknown as App, { version: "0.4.2" } as PluginManifest);
@@ -54,7 +66,7 @@ function harness() {
   const openNote = vi.spyOn(plugin as unknown as { openActiveNote(): Promise<void> }, "openActiveNote").mockResolvedValue();
   const openCenter = vi.spyOn(plugin, "openReviewCenter").mockResolvedValue();
   Reflect.get(plugin, "registerVaultEvents").call(plugin);
-  return { plugin, data, scanner, openNote, openCenter, saveData, vaultEvents, metadataEvents };
+  return { plugin, data, scanner, openNote, openCenter, saveData, vaultEvents, metadataEvents, files };
 }
 
 describe("review start disk I/O and coordination", () => {
@@ -133,6 +145,30 @@ describe("review start disk I/O and coordination", () => {
       settings: expect.objectContaining({ dataFolder: "归档/复习中心数据" }),
     })));
     expect(h.scanner.moveSource).not.toHaveBeenCalled();
+  });
+
+  it("restores all settings from the vault mirror when an update recreates revisionless plugin data", async () => {
+    const h = harness(), preserved = fixtureSettings();
+    preserved.dataFolder = "99-附件/复习中心数据";
+    preserved.showCardHeatmap = false;
+    preserved.autoQuestion.prompt = "保留的自定义提示词 {{source_content}}";
+    const mirror = createSettingsSnapshot(preserved, new Date("2026-09-20T09:00:00.000Z"));
+    h.files.set(SETTINGS_MIRROR_PATH, `${JSON.stringify(mirror, null, 2)}\n`);
+    Reflect.set(h.plugin, "loadData", vi.fn(async () => ({ schemaVersion: 4, settings: fixtureSettings() })));
+    await Reflect.get(h.plugin, "loadSettings").call(h.plugin);
+    expect(h.plugin.settings).toMatchObject({
+      dataFolder: "99-附件/复习中心数据",
+      showCardHeatmap: false,
+      autoQuestion: { prompt: "保留的自定义提示词 {{source_content}}" },
+    });
+    expect(h.saveData).toHaveBeenCalledWith(expect.objectContaining({
+      schemaVersion: 4,
+      settingsRevision: expect.any(String),
+      settings: expect.objectContaining({ dataFolder: "99-附件/复习中心数据" }),
+    }));
+    const rewrittenMirror = JSON.parse(h.files.get(SETTINGS_MIRROR_PATH)!);
+    const saveCalls = h.saveData.mock.calls as unknown as Array<[{ settingsRevision: string }]>;
+    expect(rewrittenMirror.settingsRevision).toBe(saveCalls.at(-1)?.[0].settingsRevision);
   });
 
   it.each(["note", "card"] as const)("starts %s from the loaded index without rescanning 1000 unchanged sources", async (mode) => {
