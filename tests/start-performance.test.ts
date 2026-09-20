@@ -15,7 +15,7 @@ vi.mock("obsidian", () => {
   };
 });
 
-import { Notice, type App, type PluginManifest } from "obsidian";
+import { Notice, TFolder, type App, type PluginManifest } from "obsidian";
 import ReviewCenterPlugin from "../src/main";
 import { ReviewService } from "../src/service";
 import type { ScanResult, VaultScanner } from "../src/scanner";
@@ -39,6 +39,8 @@ function harness() {
     metadataCache: { on: (name: string, fn: (...args: any[]) => void) => metadataEvents.set(name, fn) },
   };
   const plugin = new ReviewCenterPlugin(app as unknown as App, { version: "0.4.2" } as PluginManifest);
+  const saveData = vi.fn(async () => undefined);
+  Reflect.set(plugin, "saveData", saveData);
   plugin.settings = fixtureSettings();
   const data: ScanResult = { records: [fixtureRecord()], history: [], conflicts: 0 };
   const scanner = {
@@ -52,7 +54,7 @@ function harness() {
   const openNote = vi.spyOn(plugin as unknown as { openActiveNote(): Promise<void> }, "openActiveNote").mockResolvedValue();
   const openCenter = vi.spyOn(plugin, "openReviewCenter").mockResolvedValue();
   Reflect.get(plugin, "registerVaultEvents").call(plugin);
-  return { plugin, data, scanner, openNote, openCenter, vaultEvents, metadataEvents };
+  return { plugin, data, scanner, openNote, openCenter, saveData, vaultEvents, metadataEvents };
 }
 
 describe("review start disk I/O and coordination", () => {
@@ -112,6 +114,25 @@ describe("review start disk I/O and coordination", () => {
     expect(refresh).toHaveBeenCalledExactlyOnceWith("新资料/source.md");
     expect(paths.size).toBe(0);
     expect(h.scanner.scan).not.toHaveBeenCalled();
+  });
+
+  it("persists the new data path when its folder or an ancestor is moved", async () => {
+    const h = harness();
+    const dataFolder = Object.assign(new TFolder(), { path: "99-附件/复习中心数据" });
+    h.vaultEvents.get("rename")!(dataFolder, "复习中心数据");
+    expect(h.plugin.settings.dataFolder).toBe("99-附件/复习中心数据");
+    await vi.waitFor(() => expect(h.saveData).toHaveBeenLastCalledWith(expect.objectContaining({
+      schemaVersion: 4,
+      settings: expect.objectContaining({ dataFolder: "99-附件/复习中心数据" }),
+    })));
+
+    const parent = Object.assign(new TFolder(), { path: "归档" });
+    h.vaultEvents.get("rename")!(parent, "99-附件");
+    expect(h.plugin.settings.dataFolder).toBe("归档/复习中心数据");
+    await vi.waitFor(() => expect(h.saveData).toHaveBeenLastCalledWith(expect.objectContaining({
+      settings: expect.objectContaining({ dataFolder: "归档/复习中心数据" }),
+    })));
+    expect(h.scanner.moveSource).not.toHaveBeenCalled();
   });
 
   it.each(["note", "card"] as const)("starts %s from the loaded index without rescanning 1000 unchanged sources", async (mode) => {

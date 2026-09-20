@@ -27,6 +27,7 @@ export class ReviewCenterSettingTab extends PluginSettingTab {
     this.page = "groups"; this.update();
     this.containerEl.querySelector<HTMLInputElement>(`[data-review-tags="${mode}"] input`)?.focus();
   }
+  syncDataFolder(path: string): void { this.folderDraft = path; }
   hide(): void { this.clean(); }
   private clean(): void {
     this.cleaners.forEach((clean) => clean()); this.cleaners = [];

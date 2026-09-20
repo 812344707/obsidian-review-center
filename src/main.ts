@@ -79,6 +79,7 @@ export default class ReviewCenterPlugin extends Plugin {
   private startPromise: Promise<void> | null = null;
   private legacySettings: ReviewCenterSettings | null = null;
   private migrationPromise: Promise<void> | null = null;
+  private dataFolderSaveChain: Promise<void> = Promise.resolve();
   private tickBusy = false;
   private schemaUpgrade = false;
   private tickSignature = "";
@@ -937,6 +938,7 @@ export default class ReviewCenterPlugin extends Plugin {
     }));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFolder && this.followDataFolderRename(file.path, oldPath)) return;
         if (pathIsInside(oldPath, this.settings.dataFolder) && pathIsInside(file.path, this.settings.dataFolder)) return;
         for (const path of [...this.authoringFiles.keys()]) if (pathIsInside(path, oldPath)) {
           const timer = this.authoringTimers.get(path);
@@ -1022,6 +1024,29 @@ export default class ReviewCenterPlugin extends Plugin {
     this.service.sourceChanged(path);
     this.materialsDirty = true;
     this.updatePreparationState();
+  }
+
+  private followDataFolderRename(newPath: string, oldPath: string): boolean {
+    const current = this.settings.dataFolder;
+    if (!pathIsInside(current, oldPath)) return false;
+    const suffix = current.slice(oldPath.length).replace(/^\/+/, "");
+    let relocated: string;
+    try { relocated = validateDataFolder(suffix ? `${newPath}/${suffix}` : newPath); }
+    catch { return false; }
+    if (relocated === current) return false;
+
+    this.settings = { ...this.settings, dataFolder: relocated };
+    this.service.settingsChanged();
+    this.settingsTab?.syncDataFolder(relocated);
+    const snapshot = this.settings;
+    this.dataFolderSaveChain = this.dataFolderSaveChain
+      .catch(() => undefined)
+      .then(() => this.saveData({ schemaVersion: 4, settings: snapshot } satisfies StoredPluginData))
+      .catch((error: unknown) => {
+        console.error("[渐进式复习] 数据目录新位置保存失败", error);
+        new Notice(`数据目录已移动到“${relocated}”，但新位置保存失败，请重新打开插件设置后保存：${errorMessage(error)}`, 12000);
+      });
+    return true;
   }
 
   private async renderOpenViews(): Promise<void> {
